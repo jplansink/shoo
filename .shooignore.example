@@ -1,0 +1,17 @@
+# Shoo ignore file
+# Files/patterns matching these will be excluded from scanning
+# Syntax: glob patterns, one per line
+
+# Test fixtures with intentionally suspicious code
+test/fixtures/
+__fixtures__/
+
+# Security research samples (if you analyze malware)
+malware-samples/
+security-research/
+
+# Vendor code that triggers false positives
+vendor/legacy/
+
+# Specific files
+false-positive-test.js

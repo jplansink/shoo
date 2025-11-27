@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          additional_files: 'shoo'
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make executable
+        run: chmod +x shoo
+
+      - name: Test help
+        run: ./shoo --help
+
+      - name: Test version
+        run: ./shoo --version
+
+      - name: Test system scan (offline)
+        run: ./shoo --system --offline
+
+      - name: Test directory scan (offline)
+        run: ./shoo --offline .

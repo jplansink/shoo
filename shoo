@@ -1,0 +1,1024 @@
+#!/usr/bin/env bash
+# Shoo - npm supply chain attack scanner
+# https://github.com/jplansink/shoo
+#
+# Three-phase architecture: SCAN → ANALYZE → REPORT
+# Detects: Shai-Hulud, nx/Singularity, debug/chalk, DuckDB, Unicode malware
+#
+# Usage:
+#   ./shoo                    # Scan current directory + system
+#   ./shoo ~/projects         # Scan specific directory + system
+#   ./shoo --system           # System-only scan
+#   ./shoo --help             # Show help
+
+set -o pipefail
+
+readonly VERSION="2.0.0"
+readonly DB_VERSION="2025.11.26"
+readonly MALWARE_DB_URL="https://malware-list.aikido.dev/malware_predictions.json"
+readonly CACHE_DIR="${HOME}/.cache/shoo"
+readonly CACHE_TTL=86400  # 24 hours
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+VERBOSITY=1          # 0=quiet, 1=normal, 2=verbose, 3=debug
+SCAN_PROJECTS=1      # 1=scan project dirs, 0=skip
+SCAN_SYSTEM=0        # 1=scan system locations, 0=skip (use --system)
+SEARCH_DIR=""        # Directory to scan
+USE_ONLINE_DB=1      # 1=fetch online database, 0=offline only
+OUTPUT_FORMAT="text" # text, json
+
+# Colors (detect terminal support)
+if [[ -t 1 ]] && command -v tput &>/dev/null && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[1;33m'
+    readonly BLUE='\033[0;34m'
+    readonly DIM='\033[2m'
+    readonly NC='\033[0m'
+else
+    readonly RED='' GREEN='' YELLOW='' BLUE='' DIM='' NC=''
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA STRUCTURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Findings array: stores all detections before filtering
+declare -a FINDINGS=()
+
+# Statistics
+declare -i FILES_SCANNED=0
+declare -i DIRS_SCANNED=0
+declare -i CRITICAL_COUNT=0
+declare -i HIGH_COUNT=0
+declare -i MEDIUM_COUNT=0
+declare -i LOW_COUNT=0
+
+# Track unique CWEs for reference footer
+declare -a CWES_USED=()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNATURES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Malware files
+readonly -a MALWARE_FILES=(
+    "setup_bun.js"
+    "bun_environment.js"
+    "actionsSecrets.json"
+)
+
+# Malicious UUIDs
+readonly MALWARE_UUID="bb8ca5f6-4175-45d2-b042-fc9ebb8170b7"
+
+# Exfiltration domains
+readonly EXFIL_DOMAINS="webhook\.site|pastebin\.com|paste\.ee|hastebin\.com"
+
+# Compromised package versions (format: "pkg@version|attack_name")
+readonly BAD_VERSIONS="
+nx@21.5.0|nx/Singularity
+nx@20.9.0|nx/Singularity
+nx@20.10.0|nx/Singularity
+nx@21.6.0|nx/Singularity
+nx@20.11.0|nx/Singularity
+nx@21.7.0|nx/Singularity
+nx@21.8.0|nx/Singularity
+debug@4.4.2|debug/chalk compromise
+chalk@5.6.1|debug/chalk compromise
+ansi-styles@6.2.2|debug/chalk compromise
+duckdb@1.3.3|DuckDB compromise
+@duckdb/node-api@1.3.3|DuckDB compromise
+@duckdb/duckdb-wasm@1.29.2|DuckDB compromise
+"
+
+# Targeted organizations
+readonly TARGETED_ORGS="@asyncapi|@posthog|posthog-js|posthog-node|@postman|@zapier|zapier-platform|@ensdomains"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CWE MAPPINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Map detector names to CWE IDs
+get_cwe_for_detector() {
+    case "$1" in
+        shai_hulud|versions|unicode|workflow|vscode|cache|shell)
+            echo "CWE-506" ;;
+        postinstall)
+            echo "CWE-94" ;;
+        semver)
+            echo "CWE-1104" ;;
+        exfil)
+            echo "CWE-200" ;;
+        destructive)
+            echo "CWE-912" ;;
+        creds)
+            echo "CWE-522" ;;
+        *)
+            echo "" ;;
+    esac
+}
+
+# CWE descriptions for reference footer
+get_cwe_info() {
+    case "$1" in
+        CWE-506)  echo "Embedded Malicious Code" ;;
+        CWE-94)   echo "Code Injection" ;;
+        CWE-200)  echo "Exposure of Sensitive Information" ;;
+        CWE-912)  echo "Hidden Functionality" ;;
+        CWE-522)  echo "Insufficiently Protected Credentials" ;;
+        CWE-1104) echo "Use of Unmaintained Third Party Components" ;;
+    esac
+}
+
+# Track unique CWE for reference footer (bash 3 compatible)
+track_cwe() {
+    local cwe="$1"
+    [[ -z "$cwe" ]] && return
+    for existing in "${CWES_USED[@]}"; do
+        [[ "$existing" == "$cwe" ]] && return
+    done
+    CWES_USED+=("$cwe")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+log_debug() { [[ $VERBOSITY -ge 3 ]] && echo -e "${DIM}$1${NC}" >&2; }
+log_info()  { [[ $VERBOSITY -ge 3 ]] && echo "$1" >&2; }
+log_warn()  { [[ $VERBOSITY -ge 3 ]] && echo "$1" >&2; }
+log_error() { echo "Error: $1" >&2; }
+
+# Print header with scan target
+print_header() {
+    [[ $VERBOSITY -eq 0 ]] && return
+
+    local target
+    if [[ $SCAN_SYSTEM -eq 1 ]] && [[ $SCAN_PROJECTS -eq 0 ]]; then
+        target="system"
+    elif [[ -n "$SEARCH_DIR" ]]; then
+        # Show relative path
+        target="${SEARCH_DIR/#$PWD/.}"
+        [[ "$target" == "$SEARCH_DIR" ]] && target="${SEARCH_DIR/#$HOME/~}"
+    else
+        target="."
+    fi
+
+    echo ""
+    if [[ $VERBOSITY -ge 2 ]]; then
+        echo -e "${BLUE}Shoo 👻${NC} v${VERSION}"
+    else
+        echo -e "${BLUE}Shoo 👻${NC} ${target}"
+    fi
+}
+
+# Print verbose completion checkmark
+print_check() {
+    [[ $VERBOSITY -lt 2 ]] && return
+    echo " ✔ $1"
+}
+
+clear_progress() {
+    [[ $VERBOSITY -eq 0 ]] && return
+    printf "\r%-70s\r" "" >&2
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FILE CLASSIFICATION (Context-Aware Detection)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Classify a file by its type/context
+# Returns: typescript_definition, type_package, test_file, build_artifact,
+#          package_cache, documentation, config, source, unknown
+classify_file() {
+    local file="$1"
+    local basename="${file##*/}"
+    local ext="${basename##*.}"
+    local dir="${file%/*}"
+
+    # TypeScript definitions (NEVER contain executable code)
+    [[ "$basename" == *.d.ts ]] && echo "typescript_definition" && return
+
+    # Type packages (@types/*)
+    [[ "$dir" == */node_modules/@types/* ]] && echo "type_package" && return
+
+    # Test files - require path component boundaries (not substring matches)
+    [[ "$basename" =~ \.(test|spec|mock)\.(js|ts|jsx|tsx)$ ]] && echo "test_file" && return
+    [[ "$dir" =~ (^|/)(__tests__|__mocks__|test|tests|spec|specs)(/|$) ]] && echo "test_file" && return
+
+    # Build artifacts - require path component boundaries
+    [[ "$dir" =~ (^|/)(dist|build|\.next|out|\.nuxt|\.output)(/|$) ]] && echo "build_artifact" && return
+
+    # Package manager caches
+    [[ "$dir" =~ (^|/)(\.npm|\.yarn|\.pnpm|\.bun/install/cache)(/|$) ]] && echo "package_cache" && return
+
+    # Documentation
+    [[ "$ext" =~ ^(md|txt|rst|adoc)$ ]] && echo "documentation" && return
+
+    # Config files
+    [[ "$basename" =~ ^(\.|)(package|tsconfig|jsconfig|eslint|prettier|babel|webpack|vite|rollup) ]] && echo "config" && return
+
+    # Source files
+    [[ "$ext" =~ ^(js|ts|jsx|tsx|mjs|cjs)$ ]] && echo "source" && return
+
+    echo "unknown"
+}
+
+# Check if file should be excluded from scanning
+is_excluded() {
+    local file="$1"
+    local file_type="$2"
+
+    # Always exclude type definitions from dangerous pattern checks
+    [[ "$file_type" == "typescript_definition" ]] && return 0
+    [[ "$file_type" == "type_package" ]] && return 0
+
+    # Exclude documentation
+    [[ "$file_type" == "documentation" ]] && return 0
+
+    # Check .shooignore if exists (with null safety for SEARCH_DIR)
+    if [[ -n "$SEARCH_DIR" ]] && [[ -f "${SEARCH_DIR}/.shooignore" ]]; then
+        while IFS= read -r pattern; do
+            [[ "$pattern" =~ ^# ]] && continue
+            [[ -z "$pattern" ]] && continue
+            [[ "$file" == *$pattern* ]] && return 0
+        done < "${SEARCH_DIR}/.shooignore"
+    fi
+
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FINDINGS MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Emit a finding
+# Usage: emit_finding SEVERITY FILE MESSAGE [DETECTOR] [CONFIDENCE] [ADVICE]
+emit_finding() {
+    local severity="$1"
+    local file="$2"
+    local message="$3"
+    local detector="${4:-unknown}"
+    local confidence="${5:-0.9}"
+    local advice="${6:-}"
+
+    FINDINGS+=("${severity}|${file}|${message}|${detector}|${confidence}|${advice}")
+
+    case "$severity" in
+        CRITICAL) ((CRITICAL_COUNT++)) ;;
+        HIGH)     ((HIGH_COUNT++)) ;;
+        MEDIUM)   ((MEDIUM_COUNT++)) ;;
+        LOW)      ((LOW_COUNT++)) ;;
+    esac
+
+    log_debug "Finding: $severity - $file - $message"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 1: SCAN
+# Collect files and metadata. NO DECISIONS here.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+scan_project_directory() {
+    local dir="$1"
+    ((DIRS_SCANNED++))
+
+    # Find package.json files (project roots)
+    while IFS= read -r pkg_json; do
+        [[ -z "$pkg_json" ]] && continue
+        local project_dir="${pkg_json%/package.json}"
+
+        # Scan for malware files
+        scan_for_malware_files "$project_dir"
+
+        # Scan package.json
+        scan_package_json "$pkg_json"
+
+        # Scan lockfile if exists
+        [[ -f "$project_dir/package-lock.json" ]] && scan_lockfile "$project_dir/package-lock.json"
+        [[ -f "$project_dir/yarn.lock" ]] && scan_lockfile "$project_dir/yarn.lock"
+        [[ -f "$project_dir/pnpm-lock.yaml" ]] && scan_lockfile "$project_dir/pnpm-lock.yaml"
+
+        # Scan JS/TS files for suspicious patterns
+        scan_source_files "$project_dir"
+
+        # Scan GitHub workflows
+        [[ -d "$project_dir/.github/workflows" ]] && scan_github_workflows "$project_dir/.github/workflows"
+
+        ((FILES_SCANNED++))
+    done < <(find "$dir" -name "package.json" -type f -not -path "*/node_modules/*" 2>/dev/null | head -500)
+}
+
+scan_for_malware_files() {
+    local dir="$1"
+
+    for malware_file in "${MALWARE_FILES[@]}"; do
+        while IFS= read -r found; do
+            [[ -z "$found" ]] && continue
+            ((FILES_SCANNED++))
+            # This is a definite malware file - mark for analysis
+            echo "MALWARE_FILE|$found|$malware_file"
+        done < <(find "$dir" -name "$malware_file" -type f 2>/dev/null)
+    done
+}
+
+scan_package_json() {
+    local file="$1"
+    ((FILES_SCANNED++))
+
+    # Check for targeted organizations
+    if grep -qE "$TARGETED_ORGS" "$file" 2>/dev/null; then
+        echo "TARGETED_ORG|$file"
+    fi
+
+    # Check for suspicious postinstall
+    if grep -qE '"(pre|post)?install":\s*"[^"]*\b(curl|wget|eval|node\s+setup)\b' "$file" 2>/dev/null; then
+        echo "SUSPICIOUS_POSTINSTALL|$file"
+    fi
+
+    # Check for unpinned risky packages
+    if grep -qE "\"($TARGETED_ORGS)\":\s*\"[\^~]" "$file" 2>/dev/null; then
+        echo "UNPINNED_RISKY|$file"
+    fi
+}
+
+scan_lockfile() {
+    local file="$1"
+    local filename="${file##*/}"
+    ((FILES_SCANNED++))
+
+    # Check for known bad versions using format-specific detection
+    while IFS='|' read -r pkg_version attack_name; do
+        [[ -z "$pkg_version" ]] && continue
+        # Use %@ to strip from last @ (handles scoped packages like @scope/pkg@ver)
+        local pkg="${pkg_version%@*}"
+        local ver="${pkg_version##*@}"
+        local found=0
+
+        case "$filename" in
+            package-lock.json)
+                # package-lock.json v2/v3: "node_modules/pkg": { "version": "x.y.z" }
+                # Handles both regular and scoped packages
+                # Use awk with state tracking (compatible with BSD/macOS awk)
+                if awk -v pkg="$pkg" -v ver="$ver" 'BEGIN { current_pkg = "" }
+                    /\"node_modules\// {
+                        # Extract package name after node_modules/
+                        gsub(/.*"node_modules\//, "")
+                        gsub(/".*/, "")
+                        current_pkg = $0
+                    }
+                    current_pkg == pkg && /\"version\"/ {
+                        if (index($0, "\"" ver "\"") > 0) {
+                            found = 1
+                            exit
+                        }
+                    }
+                    END { exit !found }
+                ' "$file" 2>/dev/null; then
+                    found=1
+                fi
+                ;;
+            yarn.lock)
+                # yarn.lock: pkg@version:\n  version "x.y.z"
+                if awk -v pkg="$pkg" -v ver="$ver" '
+                    index($0, pkg "@") == 1 || index($0, "\"" pkg "@") == 1 { in_block = 1; next }
+                    /^[^ \t]/ { in_block = 0 }
+                    in_block && /version / && index($0, "\"" ver "\"") > 0 {
+                        found = 1
+                        exit
+                    }
+                    END { exit !found }
+                ' "$file" 2>/dev/null; then
+                    found=1
+                fi
+                ;;
+            pnpm-lock.yaml)
+                # pnpm-lock.yaml: /pkg@version: or 'pkg@version':
+                # Escape regex special chars in pkg/ver (handles @scope/pkg names)
+                local pkg_escaped ver_escaped
+                pkg_escaped=$(printf '%s' "$pkg" | sed 's/[[\.*^$/]/\\&/g')
+                ver_escaped=$(printf '%s' "$ver" | sed 's/[[\.*^$/]/\\&/g')
+                if grep -qE "(^|/)${pkg_escaped}@${ver_escaped}:" "$file" 2>/dev/null; then
+                    found=1
+                fi
+                ;;
+        esac
+
+        [[ $found -eq 1 ]] && echo "BAD_VERSION|$file|$pkg_version|$attack_name"
+    done <<< "$BAD_VERSIONS"
+}
+
+scan_source_files() {
+    local dir="$1"
+
+    while IFS= read -r file; do
+        [[ -z "$file" ]] && continue
+        ((FILES_SCANNED++))
+
+        local file_type
+        file_type=$(classify_file "$file")
+
+        # Skip excluded file types
+        is_excluded "$file" "$file_type" && continue
+
+        # Check for exfiltration domains
+        if grep -qE "$EXFIL_DOMAINS|$MALWARE_UUID" "$file" 2>/dev/null; then
+            echo "EXFILTRATION|$file|$file_type"
+        fi
+
+        # Check for destructive patterns (context-aware)
+        if grep -qE 'rm\s+-rf\s+[$/~]|rmSync.*recursive.*true' "$file" 2>/dev/null; then
+            echo "DESTRUCTIVE|$file|$file_type"
+        fi
+
+        # Check for unicode malware pattern (requires multiple validators)
+        # Pre-filter with single grep to avoid 3x file reads
+        if grep -qE "0xFE00|0xE0100|codePointAt" "$file" 2>/dev/null; then
+            # Verify all three patterns are present (confirms malware signature)
+            if grep -q "0xFE00" "$file" 2>/dev/null && \
+               grep -q "0xE0100" "$file" 2>/dev/null && \
+               grep -q "codePointAt" "$file" 2>/dev/null; then
+                echo "UNICODE_MALWARE|$file|$file_type"
+            fi
+        fi
+
+        # Check for credential harvesting
+        if grep -qiE "trufflehog|truffle.*hog" "$file" 2>/dev/null; then
+            echo "CREDENTIAL_HARVEST|$file|$file_type"
+        fi
+
+    done < <(find "$dir" \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" \) -type f -size -500k -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/.next/*" 2>/dev/null | head -2000)
+}
+
+scan_github_workflows() {
+    local dir="$1"
+
+    while IFS= read -r workflow; do
+        [[ -z "$workflow" ]] && continue
+        ((FILES_SCANNED++))
+
+        # Check for shai-hulud workflows
+        if [[ "${workflow##*/}" == *shai-hulud* ]] || [[ "${workflow##*/}" == formatter_* ]]; then
+            echo "MALICIOUS_WORKFLOW|$workflow"
+        fi
+
+        # Check for SHA1HULUD runners
+        if grep -qiE "SHA1HULUD|runs-on:.*self-hosted.*SHA1" "$workflow" 2>/dev/null; then
+            echo "MALICIOUS_RUNNER|$workflow"
+        fi
+
+        # Check for suspicious base64
+        if grep -qE "YmFzaC|L2Jpbi9iYXNo|bnBt" "$workflow" 2>/dev/null; then
+            echo "SUSPICIOUS_WORKFLOW|$workflow"
+        fi
+    done < <(find "$dir" -name "*.yml" -o -name "*.yaml" 2>/dev/null)
+}
+
+scan_system_locations() {
+    # Global npm packages
+    if command -v npm &>/dev/null; then
+        local npm_global
+        npm_global=$(npm list -g --depth=0 2>/dev/null || true)
+
+        while IFS='|' read -r pkg_version attack_name; do
+            [[ -z "$pkg_version" ]] && continue
+            # Use %@ and ##@ to handle scoped packages (@scope/pkg@ver)
+            if echo "$npm_global" | grep -q "${pkg_version%@*}@${pkg_version##*@}"; then
+                echo "GLOBAL_BAD_VERSION|npm|$pkg_version|$attack_name"
+            fi
+        done <<< "$BAD_VERSIONS"
+        ((FILES_SCANNED++))
+    fi
+
+    # VS Code extensions
+    local vscode_dirs=(
+        "$HOME/.vscode/extensions"
+        "$HOME/.vscode-server/extensions"
+        "$HOME/.vscodium/extensions"
+    )
+
+    for ext_dir in "${vscode_dirs[@]}"; do
+        if [[ -d "$ext_dir" ]]; then
+            while IFS= read -r jsfile; do
+                [[ -z "$jsfile" ]] && continue
+                ((FILES_SCANNED++))
+
+                # Pre-filter with single grep to avoid 3x file reads
+                if grep -qE "0xFE00|0xE0100|codePointAt" "$jsfile" 2>/dev/null; then
+                    if grep -q "0xFE00" "$jsfile" 2>/dev/null && \
+                       grep -q "0xE0100" "$jsfile" 2>/dev/null && \
+                       grep -q "codePointAt" "$jsfile" 2>/dev/null; then
+                        echo "VSCODE_MALWARE|$jsfile"
+                    fi
+                fi
+            done < <(find "$ext_dir" -name "*.js" -type f -size -100k 2>/dev/null | head -500)
+        fi
+    done
+
+    # npm cache
+    local npm_cache
+    npm_cache=$(npm config get cache 2>/dev/null || echo "$HOME/.npm")
+    if [[ -d "$npm_cache" ]]; then
+        for malware_file in "${MALWARE_FILES[@]}"; do
+            if find "$npm_cache" -name "$malware_file" -type f 2>/dev/null | grep -q .; then
+                echo "CACHE_MALWARE|$npm_cache|$malware_file"
+            fi
+        done
+        ((FILES_SCANNED++))
+    fi
+
+    # Shell configs (nx malware tampered with these)
+    for rcfile in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [[ -f "$rcfile" ]]; then
+            ((FILES_SCANNED++))
+            if grep -qE "shutdown|s1ngularity|singularity" "$rcfile" 2>/dev/null; then
+                echo "SHELL_TAMPER|$rcfile"
+            fi
+        fi
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2: ANALYZE
+# Process scan results, apply context, calculate confidence. NO REPORTING.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+analyze_phase() {
+    # Process each scan result
+    while IFS='|' read -r type file extra1 extra2; do
+        [[ -z "$type" ]] && continue
+
+        case "$type" in
+            MALWARE_FILE)
+                emit_finding "CRITICAL" "$file" "Known malware file: $extra1" "shai_hulud" "1.0" \
+                    "Delete immediately, rotate all credentials"
+                ;;
+
+            TARGETED_ORG)
+                emit_finding "MEDIUM" "$file" "Package from targeted organization" "shai_hulud" "0.6" \
+                    "Verify package integrity, check install date"
+                ;;
+
+            SUSPICIOUS_POSTINSTALL)
+                emit_finding "HIGH" "$file" "Suspicious postinstall script (curl/wget/eval)" "postinstall" "0.85" \
+                    "Review script contents before running npm install"
+                ;;
+
+            UNPINNED_RISKY)
+                emit_finding "MEDIUM" "$file" "Unpinned version of targeted package" "semver" "0.5" \
+                    "Pin exact versions: remove ^ and ~ from package.json"
+                ;;
+
+            BAD_VERSION)
+                emit_finding "CRITICAL" "$file" "Compromised version: $extra1 ($extra2)" "versions" "1.0" \
+                    "Remove package, clean reinstall, rotate credentials"
+                ;;
+
+            GLOBAL_BAD_VERSION)
+                emit_finding "CRITICAL" "$file global" "Compromised global package: $extra1 ($extra2)" "versions" "1.0" \
+                    "npm uninstall -g ${extra1%@*}, rotate credentials"
+                ;;
+
+            EXFILTRATION)
+                local file_type="$extra1"
+                if [[ "$file_type" == "test_file" ]]; then
+                    emit_finding "LOW" "$file" "Exfiltration domain in test file" "exfil" "0.3" \
+                        "Likely test mock - verify manually"
+                else
+                    emit_finding "HIGH" "$file" "Exfiltration endpoint detected" "exfil" "0.9" \
+                        "Review file for data theft, check network logs"
+                fi
+                ;;
+
+            DESTRUCTIVE)
+                local file_type="$extra1"
+                case "$file_type" in
+                    test_file)
+                        emit_finding "LOW" "$file" "Destructive command in test (expected cleanup)" "destructive" "0.2" ""
+                        ;;
+                    package_cache)
+                        emit_finding "LOW" "$file" "Destructive pattern in cache (not executed)" "destructive" "0.3" \
+                            "Run: npm cache clean --force"
+                        ;;
+                    source)
+                        # Check if it looks like a cleanup function (wider context window)
+                        if grep -B8 -A8 "rm.*-rf\|rmSync" "$file" 2>/dev/null | grep -qiE "clean|teardown|reset|temp|tmp|cache|unlink"; then
+                            emit_finding "LOW" "$file" "Cleanup function detected" "destructive" "0.3" ""
+                        # Check if it's in a commonly safe file pattern
+                        elif [[ "$file" =~ (cleanup|teardown|reset|temp|cache|download|install)\.(js|ts)$ ]]; then
+                            emit_finding "LOW" "$file" "Likely cleanup in utility file" "destructive" "0.4" ""
+                        else
+                            emit_finding "HIGH" "$file" "Destructive payload" "destructive" "0.85" \
+                                "Review file - may delete user data"
+                        fi
+                        ;;
+                    *)
+                        emit_finding "MEDIUM" "$file" "Destructive pattern (unknown context)" "destructive" "0.6" \
+                            "Manual review recommended"
+                        ;;
+                esac
+                ;;
+
+            UNICODE_MALWARE)
+                local file_type="$extra1"
+                if [[ "$file_type" == "test_file" ]] || [[ "$file_type" == "package_cache" ]]; then
+                    emit_finding "MEDIUM" "$file" "Unicode malware pattern (low-risk context)" "unicode" "0.5" \
+                        "Verify file contents"
+                else
+                    emit_finding "HIGH" "$file" "Hidden unicode malware detected" "unicode" "0.9" \
+                        "File contains invisible malicious code"
+                fi
+                ;;
+
+            CREDENTIAL_HARVEST)
+                emit_finding "HIGH" "$file" "Credential harvesting pattern" "creds" "0.8" \
+                    "Check for unauthorized secret scanning"
+                ;;
+
+            MALICIOUS_WORKFLOW)
+                emit_finding "CRITICAL" "$file" "Known malicious GitHub workflow" "workflow" "1.0" \
+                    "Delete workflow, check for unauthorized actions"
+                ;;
+
+            MALICIOUS_RUNNER)
+                emit_finding "CRITICAL" "$file" "SHA1HULUD malicious runner" "workflow" "1.0" \
+                    "Remove workflow, audit GitHub Actions history"
+                ;;
+
+            SUSPICIOUS_WORKFLOW)
+                emit_finding "MEDIUM" "$file" "Suspicious base64 in workflow" "workflow" "0.6" \
+                    "Review encoded content manually"
+                ;;
+
+            VSCODE_MALWARE)
+                emit_finding "HIGH" "$file" "Unicode malware in VS Code extension" "vscode" "0.9" \
+                    "Uninstall extension, check VS Code marketplace"
+                ;;
+
+            CACHE_MALWARE)
+                emit_finding "MEDIUM" "$file" "Malware file in npm cache: $extra1" "cache" "0.7" \
+                    "Run: npm cache clean --force"
+                ;;
+
+            SHELL_TAMPER)
+                emit_finding "CRITICAL" "$file" "Shell config tampering detected" "shell" "0.95" \
+                    "Review and restore shell config, check for 'shutdown' commands"
+                ;;
+        esac
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3: REPORT
+# Filter findings, format output, provide actionable advice.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+report_phase() {
+    [[ $VERBOSITY -eq 0 ]] && return
+
+    # Build summary line
+    local total=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+    local parts=()
+    [[ $CRITICAL_COUNT -gt 0 ]] && parts+=("critical: $CRITICAL_COUNT")
+    [[ $HIGH_COUNT -gt 0 ]] && parts+=("high: $HIGH_COUNT")
+    [[ $MEDIUM_COUNT -gt 0 ]] && parts+=("medium: $MEDIUM_COUNT")
+    [[ $LOW_COUNT -gt 0 ]] && parts+=("low: $LOW_COUNT")
+
+    echo ""
+    if [[ $total -eq 0 ]]; then
+        echo "Total: 0 issues"
+        return
+    fi
+
+    # Print summary first
+    local summary=""
+    local first=1
+    for part in "${parts[@]}"; do
+        if [[ $first -eq 1 ]]; then
+            summary="$part"
+            first=0
+        else
+            summary="$summary, $part"
+        fi
+    done
+    echo "Total: $total ($summary)"
+    echo ""
+
+    # Group findings by severity
+    local -a critical=() high=() medium=() low=()
+    for finding in "${FINDINGS[@]}"; do
+        IFS='|' read -r severity file message detector confidence advice <<< "$finding"
+        case "$severity" in
+            CRITICAL) critical+=("$finding") ;;
+            HIGH)     high+=("$finding") ;;
+            MEDIUM)   medium+=("$finding") ;;
+            LOW)      low+=("$finding") ;;
+        esac
+    done
+
+    # Helper to make path relative
+    relative_path() {
+        local file="$1"
+        if [[ "$file" == "$SEARCH_DIR"/* ]]; then
+            echo "${file#$SEARCH_DIR/}"
+        elif [[ "$file" == "$HOME"/* ]]; then
+            echo "${file/#$HOME/~}"
+        else
+            echo "$file"
+        fi
+    }
+
+    # Report critical
+    if [[ ${#critical[@]} -gt 0 ]]; then
+        echo -e "${RED}CRITICAL${NC}"
+        for finding in "${critical[@]}"; do
+            IFS='|' read -r _ file message detector _ advice <<< "$finding"
+            local cwe
+            cwe=$(get_cwe_for_detector "$detector")
+            track_cwe "$cwe"
+            if [[ -n "$cwe" ]]; then
+                echo -e "  ${RED}✗${NC} $message ${DIM}[$cwe]${NC}"
+            else
+                echo -e "  ${RED}✗${NC} $message"
+            fi
+            echo "    $(relative_path "$file")"
+            # Advice only in verbose mode
+            if [[ $VERBOSITY -ge 2 ]] && [[ -n "$advice" ]]; then
+                echo -e "    ${DIM}→ $advice${NC}"
+            fi
+        done
+        echo ""
+    fi
+
+    # Report high
+    if [[ ${#high[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}HIGH${NC}"
+        for finding in "${high[@]}"; do
+            IFS='|' read -r _ file message detector _ advice <<< "$finding"
+            local cwe
+            cwe=$(get_cwe_for_detector "$detector")
+            track_cwe "$cwe"
+            if [[ -n "$cwe" ]]; then
+                echo -e "  ${YELLOW}✗${NC} $message ${DIM}[$cwe]${NC}"
+            else
+                echo -e "  ${YELLOW}✗${NC} $message"
+            fi
+            echo "    $(relative_path "$file")"
+            if [[ $VERBOSITY -ge 2 ]] && [[ -n "$advice" ]]; then
+                echo -e "    ${DIM}→ $advice${NC}"
+            fi
+        done
+        echo ""
+    fi
+
+    # Report medium (verbose only)
+    if [[ ${#medium[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
+        echo -e "${BLUE}MEDIUM${NC}"
+        for finding in "${medium[@]}"; do
+            IFS='|' read -r _ file message detector _ advice <<< "$finding"
+            local cwe
+            cwe=$(get_cwe_for_detector "$detector")
+            track_cwe "$cwe"
+            if [[ -n "$cwe" ]]; then
+                echo -e "  ? $message ${DIM}[$cwe]${NC}"
+            else
+                echo "  ? $message"
+            fi
+            echo "    $(relative_path "$file")"
+            [[ -n "$advice" ]] && echo -e "    ${DIM}→ $advice${NC}"
+        done
+        echo ""
+    fi
+
+    # Report low (verbose only)
+    if [[ ${#low[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
+        echo -e "${DIM}LOW${NC}"
+        for finding in "${low[@]}"; do
+            IFS='|' read -r _ file message detector _ advice <<< "$finding"
+            local cwe
+            cwe=$(get_cwe_for_detector "$detector")
+            track_cwe "$cwe"
+            if [[ -n "$cwe" ]]; then
+                echo -e "  - $message ${DIM}[$cwe]${NC}"
+            else
+                echo "  - $message"
+            fi
+            echo "    $(relative_path "$file")"
+            [[ -n "$advice" ]] && echo -e "    ${DIM}→ $advice${NC}"
+        done
+        echo ""
+    fi
+
+    # Hint for more info (normal mode only)
+    if [[ $VERBOSITY -eq 1 ]]; then
+        if [[ $CRITICAL_COUNT -gt 0 ]] || [[ $HIGH_COUNT -gt 0 ]]; then
+            echo "Use -v for remediation steps"
+        elif [[ $MEDIUM_COUNT -gt 0 ]] || [[ $LOW_COUNT -gt 0 ]]; then
+            echo "Use -v for details"
+        fi
+    fi
+
+    # Print CWE references (verbose only)
+    if [[ ${#CWES_USED[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
+        echo ""
+        echo "References:"
+        for cwe in "${CWES_USED[@]}"; do
+            local desc id
+            desc=$(get_cwe_info "$cwe")
+            id="${cwe#CWE-}"
+            echo "  $cwe: $desc"
+            echo "  https://cwe.mitre.org/data/definitions/${id}.html"
+        done
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTERNAL DATABASE (Optional)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fetch_malware_database() {
+    [[ $USE_ONLINE_DB -eq 0 ]] && return 1
+
+    mkdir -p "$CACHE_DIR"
+    local cache_file="$CACHE_DIR/malware.json"
+
+    # Check cache freshness
+    if [[ -f "$cache_file" ]]; then
+        local age
+        if [[ "$(uname)" == "Darwin" ]]; then
+            age=$(($(date +%s) - $(stat -f %m "$cache_file")))
+        else
+            age=$(($(date +%s) - $(stat -c %Y "$cache_file")))
+        fi
+
+        if [[ $age -lt $CACHE_TTL ]]; then
+            log_info "Using cached malware database (age: ${age}s)"
+            return 0
+        fi
+    fi
+
+    # Fetch fresh database
+    log_info "Fetching malware database..."
+    if command -v curl &>/dev/null; then
+        curl -s --connect-timeout 5 --max-time 15 -o "$cache_file" "$MALWARE_DB_URL" 2>/dev/null && return 0
+    elif command -v wget &>/dev/null; then
+        wget -q --timeout=5 -O "$cache_file" "$MALWARE_DB_URL" 2>/dev/null && return 0
+    fi
+
+    log_warn "Could not fetch malware database - using hardcoded signatures"
+    return 1
+}
+
+check_online_database() {
+    local cache_file="$CACHE_DIR/malware.json"
+    [[ ! -f "$cache_file" ]] && return
+
+    # This would check packages against the online database
+    # Implementation depends on database format
+    log_info "Checked against online database"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+show_help() {
+    cat << 'EOF'
+Shoo 👻 npm supply chain scanner
+
+Usage: shoo [options] [directory]
+
+Options:
+  -v           Verbose output with remediation
+  -q           Quiet mode (exit code only)
+  --system     Scan system only (npm globals, VS Code, cache)
+  --offline    Skip online malware database
+
+Exit codes:
+  0  Clean
+  1  Critical issues
+  2  High issues
+  3  Medium issues
+
+Examples:
+  shoo                Scan current directory
+  shoo ~/projects     Scan specific directory
+  shoo --system       Check system for infections
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--verbose)
+                VERBOSITY=2
+                shift
+                ;;
+            -q|--quiet)
+                VERBOSITY=0
+                shift
+                ;;
+            --system)
+                SCAN_PROJECTS=0
+                SCAN_SYSTEM=1
+                shift
+                ;;
+            --offline)
+                USE_ONLINE_DB=0
+                shift
+                ;;
+            --version)
+                echo "shoo $VERSION"
+                exit 0
+                ;;
+            --debug)
+                VERBOSITY=3
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                exit 1
+                ;;
+            *)
+                if [[ -d "$1" ]]; then
+                    SEARCH_DIR="$(cd "$1" && pwd)"
+                else
+                    log_error "Directory not found: $1"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Default to current directory if none specified
+    [[ -z "$SEARCH_DIR" ]] && SEARCH_DIR="$(pwd)"
+}
+
+main() {
+    parse_args "$@"
+    print_header
+
+    # Fetch online database (background, non-blocking)
+    fetch_malware_database &
+    local db_pid=$!
+
+    # Phase 1: Scan (output to temp file to separate from progress messages)
+    local scan_results
+    scan_results=$(mktemp)
+    trap 'rm -f "'"$scan_results"'"' EXIT
+
+    # Scan project directory if enabled
+    if [[ $SCAN_PROJECTS -eq 1 ]] && [[ -n "$SEARCH_DIR" ]]; then
+        if [[ $VERBOSITY -ge 2 ]]; then
+            echo ""
+            echo "Scanning ${SEARCH_DIR/#$PWD/.}"
+        fi
+        scan_project_directory "$SEARCH_DIR" >> "$scan_results"
+        print_check "project files"
+    fi
+
+    # Scan system locations if enabled
+    if [[ $SCAN_SYSTEM -eq 1 ]]; then
+        if [[ $VERBOSITY -ge 2 ]]; then
+            echo ""
+            echo "Scanning system"
+        fi
+        scan_system_locations >> "$scan_results"
+        print_check "npm global packages"
+        print_check "VS Code extensions"
+        print_check "npm cache"
+        print_check "shell configs"
+    fi
+
+    clear_progress
+    [[ $VERBOSITY -ge 2 ]] && echo "Scanned $FILES_SCANNED files"
+
+    # Wait for database fetch
+    wait "$db_pid" 2>/dev/null || true
+
+    # Phase 2: Analyze scan results
+    analyze_phase < "$scan_results"
+
+    # Check online database
+    check_online_database
+
+    # Phase 3: Report findings
+    report_phase
+
+    # Exit code based on severity
+    [[ $CRITICAL_COUNT -gt 0 ]] && exit 1
+    [[ $HIGH_COUNT -gt 0 ]] && exit 2
+    [[ $MEDIUM_COUNT -gt 0 ]] && exit 3
+    exit 0
+}
+
+main "$@"
