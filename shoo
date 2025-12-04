@@ -611,8 +611,8 @@ analyze_phase() {
                 ;;
 
             TARGETED_ORG)
-                emit_finding "MEDIUM" "$file" "Package from targeted organization" "shai_hulud" "0.6" \
-                    "Verify package integrity, check install date"
+                emit_finding "LOW" "$file" "Package from targeted organization" "shai_hulud" "0.3" \
+                    "Verify package integrity if recently installed"
                 ;;
 
             SUSPICIOUS_POSTINSTALL)
@@ -621,8 +621,8 @@ analyze_phase() {
                 ;;
 
             UNPINNED_RISKY)
-                emit_finding "MEDIUM" "$file" "Unpinned version of targeted package" "semver" "0.5" \
-                    "Pin exact versions: remove ^ and ~ from package.json"
+                emit_finding "LOW" "$file" "Unpinned version of targeted package" "semver" "0.3" \
+                    "Consider pinning exact versions"
                 ;;
 
             BAD_VERSION)
@@ -947,6 +947,7 @@ Usage: shoo [options] [directory]
 Options:
   -v           Verbose output with remediation
   -q           Quiet mode (exit code only)
+  --all        Scan directory AND system locations
   --system     Scan system only (npm globals, VS Code, cache)
   --offline    Skip online malware database
 
@@ -959,7 +960,8 @@ Exit codes:
 Examples:
   shoo                Scan current directory
   shoo ~/projects     Scan specific directory
-  shoo --system       Check system for infections
+  shoo --all          Scan current directory + system
+  shoo --system       Scan system only
 EOF
 }
 
@@ -976,6 +978,10 @@ parse_args() {
                 ;;
             -q|--quiet)
                 VERBOSITY=0
+                shift
+                ;;
+            --all)
+                SCAN_SYSTEM=1
                 shift
                 ;;
             --system)

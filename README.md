@@ -18,7 +18,7 @@ npm supply chain attacks are increasing. Shoo [detects](#what-it-detects), malwa
 | Shai-Hulud | Malware files, workflow tampering | Targeted orgs |
 
 - **Fast** — runs in milliseconds, single bash script, zero dependencies
-- **Offline-first** — works without network, fetches updates when available
+- **Works offline** — no network required, fetches updates when available
 - **Context-aware** — ignores test files and build artifacts, reduces false positives
 - **Beyond npm audit** — checks VS Code extensions, shell configs, GitHub workflows
 
@@ -63,7 +63,8 @@ Use -v for remediation steps
 ```bash
 ./shoo                # Scan current directory
 ./shoo ~/projects     # Scan specific directory
-./shoo --system       # Scan global packages, VS Code, npm cache
+./shoo --all          # Scan directory + system
+./shoo --system       # Scan system only
 ./shoo -v             # Verbose output
 ./shoo -q             # Quiet (exit code only)
 ./shoo --offline      # Skip online database
