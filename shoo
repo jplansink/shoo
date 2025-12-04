@@ -13,7 +13,7 @@
 
 set -o pipefail
 
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 readonly MALWARE_DB_URL="https://malware-list.aikido.dev/malware_predictions.json"
 readonly CACHE_DIR="${HOME}/.cache/shoo"
 readonly CACHE_TTL=86400  # 24 hours
@@ -27,6 +27,7 @@ SCAN_PROJECTS=1      # 1=scan project dirs, 0=skip
 SCAN_SYSTEM=0        # 1=scan system locations, 0=skip (use --system)
 SEARCH_DIR=""        # Directory to scan
 USE_ONLINE_DB=1      # 1=fetch online database, 0=offline only
+OUTPUT_FORMAT="text" # text|json
 
 # Colors (detect terminal support)
 if [[ -t 1 ]] && command -v tput &>/dev/null && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
@@ -149,6 +150,12 @@ get-them-args@1.3.3|Shai-Hulud 2.0
 # Targeted organizations (Shai-Hulud 2.0 targets)
 readonly TARGETED_ORGS="@asyncapi|@posthog|posthog-js|posthog-node|@postman|@zapier|zapier-platform|@ensdomains|@react-native-aria|@gluestack-ui|@browserbase|@voiceflow|@accordproject"
 
+# Secret patterns
+readonly SECRET_AWS_KEY="AKIA[0-9A-Z]{16}"
+readonly SECRET_GITHUB_TOKEN="ghp_[a-zA-Z0-9]{36}"
+readonly SECRET_NPM_TOKEN="npm_[a-zA-Z0-9]{36}"
+readonly SECRET_PRIVATE_KEY="-----BEGIN.*PRIVATE KEY-----"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CWE MAPPINGS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -168,6 +175,10 @@ get_cwe_for_detector() {
             echo "CWE-912" ;;
         creds)
             echo "CWE-522" ;;
+        secrets)
+            echo "CWE-798" ;;
+        npm_audit)
+            echo "CWE-1035" ;;
         *)
             echo "" ;;
     esac
@@ -181,6 +192,8 @@ get_cwe_info() {
         CWE-200)  echo "Exposure of Sensitive Information" ;;
         CWE-912)  echo "Hidden Functionality" ;;
         CWE-522)  echo "Insufficiently Protected Credentials" ;;
+        CWE-798)  echo "Use of Hard-coded Credentials" ;;
+        CWE-1035) echo "Vulnerable Third Party Component" ;;
         CWE-1104) echo "Use of Unmaintained Third Party Components" ;;
     esac
 }
@@ -263,6 +276,9 @@ classify_file() {
 
     # Build artifacts - require path component boundaries
     [[ "$dir" =~ (^|/)(dist|build|\.next|out|\.nuxt|\.output)(/|$) ]] && echo "build_artifact" && return
+
+    # Sandbox/template/example contexts (expected destructive patterns)
+    [[ "$dir" =~ (^|/)(sandbox|template|templates|example|examples|demo|demos|fixture|fixtures|sample|samples)(/|$) ]] && echo "sandbox" && return
 
     # Package manager caches
     [[ "$dir" =~ (^|/)(\.npm|\.yarn|\.pnpm|\.bun/install/cache)(/|$) ]] && echo "package_cache" && return
@@ -360,6 +376,9 @@ scan_project_directory() {
 
         # Scan GitHub workflows
         [[ -d "$project_dir/.github/workflows" ]] && scan_github_workflows "$project_dir/.github/workflows"
+
+        # Run npm audit if available
+        scan_npm_audit "$project_dir"
 
         ((FILES_SCANNED++))
     done < <(find "$dir" -name "package.json" -type f -not -path "*/node_modules/*" 2>/dev/null | head -500)
@@ -503,6 +522,20 @@ scan_source_files() {
             echo "CREDENTIAL_HARVEST|$file|$file_type"
         fi
 
+        # Check for hardcoded secrets
+        if grep -qE "$SECRET_AWS_KEY" "$file" 2>/dev/null; then
+            echo "SECRET|$file|$file_type|aws_key"
+        fi
+        if grep -qE "$SECRET_GITHUB_TOKEN" "$file" 2>/dev/null; then
+            echo "SECRET|$file|$file_type|github_token"
+        fi
+        if grep -qE "$SECRET_NPM_TOKEN" "$file" 2>/dev/null; then
+            echo "SECRET|$file|$file_type|npm_token"
+        fi
+        if [[ "$file_type" == "source" ]] && grep -qE "$SECRET_PRIVATE_KEY" "$file" 2>/dev/null; then
+            echo "SECRET|$file|$file_type|private_key"
+        fi
+
     done < <(find "$dir" \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" \) -type f -size -500k -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/.next/*" 2>/dev/null | head -2000)
 }
 
@@ -528,6 +561,35 @@ scan_github_workflows() {
             echo "SUSPICIOUS_WORKFLOW|$workflow"
         fi
     done < <(find "$dir" -name "*.yml" -o -name "*.yaml" 2>/dev/null)
+}
+
+scan_npm_audit() {
+    local dir="$1"
+    command -v npm &>/dev/null || return
+    [[ ! -f "$dir/package.json" ]] && return
+    [[ ! -f "$dir/package-lock.json" ]] && return
+
+    local audit_output
+    audit_output=$(cd "$dir" && npm audit --json 2>/dev/null || true)
+    [[ -z "$audit_output" ]] && return
+
+    # Parse npm audit JSON - extract vulnerabilities section
+    echo "$audit_output" | awk -F'"' '
+    /"vulnerabilities"[[:space:]]*:/ { in_vulns = 1 }
+    /"metadata"/ { in_vulns = 0 }
+    in_vulns && /"name"[[:space:]]*:/ { pkg = $4 }
+    in_vulns && /"severity"[[:space:]]*:/ && pkg { sev = $4 }
+    in_vulns && /"title"[[:space:]]*:/ && pkg && sev {
+        title = $4
+        shoo_sev = "MEDIUM"
+        if (sev == "critical") shoo_sev = "CRITICAL"
+        else if (sev == "high") shoo_sev = "HIGH"
+        else if (sev == "moderate") shoo_sev = "MEDIUM"
+        else if (sev == "low") shoo_sev = "LOW"
+        print "NPM_AUDIT|" pkg "|" shoo_sev "|" title
+        pkg = ""; sev = ""
+    }
+    '
 }
 
 scan_system_locations() {
@@ -649,19 +711,17 @@ analyze_phase() {
             DESTRUCTIVE)
                 local file_type="$extra1"
                 case "$file_type" in
-                    test_file)
-                        emit_finding "LOW" "$file" "Destructive command in test (expected cleanup)" "destructive" "0.2" ""
+                    test_file|sandbox)
+                        emit_finding "LOW" "$file" "Destructive command in test/sandbox" "destructive" "0.2" ""
                         ;;
                     package_cache)
                         emit_finding "LOW" "$file" "Destructive pattern in cache (not executed)" "destructive" "0.3" \
                             "Run: npm cache clean --force"
                         ;;
                     source)
-                        # Check if it looks like a cleanup function (wider context window)
-                        if grep -B8 -A8 "rm.*-rf\|rmSync" "$file" 2>/dev/null | grep -qiE "clean|teardown|reset|temp|tmp|cache|unlink"; then
+                        if grep -B8 -A8 "rm.*-rf\|rmSync" "$file" 2>/dev/null | grep -qiE "clean|teardown|reset|temp|tmp|cache|unlink|sandbox|template|example"; then
                             emit_finding "LOW" "$file" "Cleanup function detected" "destructive" "0.3" ""
-                        # Check if it's in a commonly safe file pattern
-                        elif [[ "$file" =~ (cleanup|teardown|reset|temp|cache|download|install)\.(js|ts)$ ]]; then
+                        elif [[ "$file" =~ (cleanup|teardown|reset|temp|cache|download|install|template|sandbox)\.(js|ts)$ ]]; then
                             emit_finding "LOW" "$file" "Likely cleanup in utility file" "destructive" "0.4" ""
                         else
                             emit_finding "HIGH" "$file" "Destructive payload" "destructive" "0.85" \
@@ -691,6 +751,29 @@ analyze_phase() {
                     "Check for unauthorized secret scanning"
                 ;;
 
+            SECRET)
+                local file_type="$extra1"
+                local secret_type="$extra2"
+                local secret_name
+                case "$secret_type" in
+                    aws_key) secret_name="AWS access key" ;;
+                    github_token) secret_name="GitHub token" ;;
+                    npm_token) secret_name="npm token" ;;
+                    private_key) secret_name="private key" ;;
+                    *) secret_name="secret" ;;
+                esac
+                if [[ "$file_type" == "test_file" ]] || [[ "$file_type" == "sandbox" ]]; then
+                    emit_finding "LOW" "$file" "Hardcoded $secret_name (test/example)" "secrets" "0.3" \
+                        "Verify this is not a real credential"
+                elif [[ "$file_type" == "config" ]] || [[ "$file_type" == "documentation" ]]; then
+                    emit_finding "MEDIUM" "$file" "Hardcoded $secret_name in config/docs" "secrets" "0.5" \
+                        "If real, rotate immediately"
+                else
+                    emit_finding "CRITICAL" "$file" "Hardcoded $secret_name detected" "secrets" "0.95" \
+                        "Rotate credential, use environment variables"
+                fi
+                ;;
+
             MALICIOUS_WORKFLOW)
                 emit_finding "CRITICAL" "$file" "Known malicious GitHub workflow" "workflow" "1.0" \
                     "Delete workflow, check for unauthorized actions"
@@ -704,6 +787,14 @@ analyze_phase() {
             SUSPICIOUS_WORKFLOW)
                 emit_finding "MEDIUM" "$file" "Suspicious base64 in workflow" "workflow" "0.6" \
                     "Review encoded content manually"
+                ;;
+
+            NPM_AUDIT)
+                local pkg="$file"
+                local npm_sev="$extra1"
+                local title="$extra2"
+                emit_finding "$npm_sev" "package.json" "npm audit: $title ($pkg)" "npm_audit" "0.9" \
+                    "Run 'npm audit fix' or update $pkg"
                 ;;
 
             VSCODE_MALWARE)
@@ -728,6 +819,56 @@ analyze_phase() {
 # PHASE 3: REPORT
 # Filter findings, format output, provide actionable advice.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' '
+}
+
+report_json() {
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local scan_dir="${SEARCH_DIR:-$(pwd)}"
+    local total=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+
+    echo "{"
+    echo "  \"version\": \"$VERSION\","
+    echo "  \"timestamp\": \"$timestamp\","
+    echo "  \"scan\": {"
+    echo "    \"directory\": \"$(json_escape "$scan_dir")\","
+    echo "    \"files_scanned\": $FILES_SCANNED,"
+    echo "    \"scan_system\": $([ $SCAN_SYSTEM -eq 1 ] && echo "true" || echo "false")"
+    echo "  },"
+    echo "  \"summary\": {"
+    echo "    \"total\": $total,"
+    echo "    \"critical\": $CRITICAL_COUNT,"
+    echo "    \"high\": $HIGH_COUNT,"
+    echo "    \"medium\": $MEDIUM_COUNT,"
+    echo "    \"low\": $LOW_COUNT"
+    echo "  },"
+    echo "  \"findings\": ["
+
+    local first=1
+    for finding in "${FINDINGS[@]}"; do
+        IFS='|' read -r severity file message detector confidence advice <<< "$finding"
+        [[ -z "$severity" ]] && continue
+        [[ $first -eq 0 ]] && echo ","
+        first=0
+
+        local cwe
+        cwe=$(get_cwe_for_detector "$detector")
+        local rel_file="$file"
+        [[ "$file" == "$scan_dir"/* ]] && rel_file="${file#"$scan_dir"/}"
+
+        echo -n "    {\"severity\": \"$severity\", \"file\": \"$(json_escape "$rel_file")\", \"message\": \"$(json_escape "$message")\", \"detector\": \"$detector\", \"confidence\": $confidence"
+        [[ -n "$cwe" ]] && echo -n ", \"cwe\": \"$cwe\""
+        [[ -n "$advice" ]] && echo -n ", \"advice\": \"$(json_escape "$advice")\""
+        echo -n "}"
+    done
+
+    echo ""
+    echo "  ]"
+    echo "}"
+}
 
 report_phase() {
     [[ $VERBOSITY -eq 0 ]] && return
@@ -947,6 +1088,7 @@ Usage: shoo [options] [directory]
 Options:
   -v           Verbose output with remediation
   -q           Quiet mode (exit code only)
+  --json       Output JSON for CI integration
   --all        Scan directory AND system locations
   --system     Scan system only (npm globals, VS Code, cache)
   --offline    Skip online malware database
@@ -991,6 +1133,11 @@ parse_args() {
                 ;;
             --offline)
                 USE_ONLINE_DB=0
+                shift
+                ;;
+            --json)
+                OUTPUT_FORMAT="json"
+                VERBOSITY=0
                 shift
                 ;;
             --version)
@@ -1070,7 +1217,11 @@ main() {
     check_online_database
 
     # Phase 3: Report findings
-    report_phase
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        report_json
+    else
+        report_phase
+    fi
 
     # Exit code based on severity
     [[ $CRITICAL_COUNT -gt 0 ]] && exit 1

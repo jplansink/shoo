@@ -94,9 +94,11 @@ Exit codes: `0` clean, `1` critical, `2` high, `3` medium
 | Attack | Packages |
 |--------|----------|
 | nx/Singularity | nx@20.9.0-21.8.0 |
-| debug/chalk | debug@4.4.2, chalk@5.6.1, ansi-styles@6.2.2 |
+| debug/chalk | debug@4.4.2, chalk@5.6.1 + 16 more |
 | DuckDB | duckdb@1.3.3, @duckdb/node-api@1.3.3 |
-| Shai-Hulud | Malware files, workflow tampering |
+| Shai-Hulud 2.0 | posthog-js, @asyncapi/specs, @ensdomains/ensjs |
+| XRP | xrpl@4.2.1-4.2.4, @2.14.2 |
+| React Native Aria | 16 compromised packages |
 
 Plus 1000+ packages from [aikido.dev](https://www.aikido.dev) online database (cached 24h).
 
@@ -106,12 +108,13 @@ Plus 1000+ packages from [aikido.dev](https://www.aikido.dev) online database (c
 |---------|----------|
 | Malware files | `setup_bun.js`, `bun_environment.js` |
 | Exfiltration endpoints | `webhook.site`, `pastebin.com` |
+| Hardcoded secrets | AWS keys, GitHub/npm tokens, private keys |
 | Destructive code | `rm -rf`, recursive rmSync |
 | Suspicious postinstall | curl/wget/eval in scripts |
 | Unicode obfuscation | Hidden homoglyph characters |
 | Malicious workflows | Encoded payloads, bad runners |
 | Shell config tampering | .bashrc, .zshrc modifications |
-| Credential harvesting | Token/key extraction |
+| npm audit CVEs | Known vulnerabilities in dependencies |
 | Targeted org typosquatting | @asyncapi, @posthog, @zapier |
 
 ### Supported Lockfiles
