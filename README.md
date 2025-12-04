@@ -67,7 +67,9 @@ Use -v for remediation steps
 ./shoo --system       # Scan system only
 ./shoo -v             # Verbose output
 ./shoo -q             # Quiet (exit code only)
-./shoo --offline      # Skip online database
+./shoo --json         # JSON output for CI
+./shoo --sarif        # SARIF output for GitHub Security
+./shoo --offline      # Skip online databases
 ```
 
 Exit codes: `0` clean, `1` critical, `2` high, `3` medium
@@ -109,6 +111,7 @@ Plus 1000+ packages from [aikido.dev](https://www.aikido.dev) online database (c
 | Malware files | `setup_bun.js`, `bun_environment.js` |
 | Exfiltration endpoints | `webhook.site`, `pastebin.com` |
 | Hardcoded secrets | AWS keys, GitHub/npm tokens, private keys |
+| Obfuscated payloads | Base64 blobs, hex encoding, suspicious minification |
 | Destructive code | `rm -rf`, recursive rmSync |
 | Suspicious postinstall | curl/wget/eval in scripts |
 | Unicode obfuscation | Hidden homoglyph characters |
@@ -131,6 +134,20 @@ Plus 1000+ packages from [aikido.dev](https://www.aikido.dev) online database (c
     ./shoo -q || exit 1
 ```
 
+### GitHub Security Tab
+
+```yaml
+- name: Security scan (SARIF)
+  run: |
+    curl -sO https://raw.githubusercontent.com/jplansink/shoo/main/shoo
+    chmod +x shoo
+    ./shoo --sarif > results.sarif || true
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: results.sarif
+```
+
 ## Excluding Files
 
 Create `.shooignore` in your project:
@@ -143,6 +160,7 @@ malware-samples/
 ## Credits
 
 - [Aikido.dev](https://www.aikido.dev) — Malware database
+- [OSV.dev](https://osv.dev) — Google's open vulnerability database
 - [Socket.dev](https://socket.dev) — Supply chain research
 
 ## Contributing

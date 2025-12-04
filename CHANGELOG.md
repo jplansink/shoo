@@ -2,6 +2,16 @@
 
 All notable changes to Shoo will be documented in this file.
 
+## [2.2.0] - 2025-12-04
+
+### Added
+- **OSV.dev integration** - Queries Google's malware database (MAL-* entries) for real-time detection
+- **SARIF output** - `--sarif` flag for GitHub Security tab integration
+- **Obfuscation detection** - Detects Base64 payloads, hex-encoded strings, suspicious minification
+
+### Improved
+- Better offline/online messaging in help text
+
 ## [2.1.0] - 2025-12-04
 
 ### Added

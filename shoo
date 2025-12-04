@@ -13,8 +13,9 @@
 
 set -o pipefail
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.2.0"
 readonly MALWARE_DB_URL="https://malware-list.aikido.dev/malware_predictions.json"
+readonly OSV_API_URL="https://api.osv.dev/v1/query"
 readonly CACHE_DIR="${HOME}/.cache/shoo"
 readonly CACHE_TTL=86400  # 24 hours
 
@@ -27,7 +28,7 @@ SCAN_PROJECTS=1      # 1=scan project dirs, 0=skip
 SCAN_SYSTEM=0        # 1=scan system locations, 0=skip (use --system)
 SEARCH_DIR=""        # Directory to scan
 USE_ONLINE_DB=1      # 1=fetch online database, 0=offline only
-OUTPUT_FORMAT="text" # text|json
+OUTPUT_FORMAT="text" # text|json|sarif
 
 # Colors (detect terminal support)
 if [[ -t 1 ]] && command -v tput &>/dev/null && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
@@ -177,8 +178,10 @@ get_cwe_for_detector() {
             echo "CWE-522" ;;
         secrets)
             echo "CWE-798" ;;
-        npm_audit)
+        npm_audit|osv)
             echo "CWE-1035" ;;
+        obfuscation)
+            echo "CWE-506" ;;
         *)
             echo "" ;;
     esac
@@ -367,7 +370,10 @@ scan_project_directory() {
         scan_package_json "$pkg_json"
 
         # Scan lockfile if exists
-        [[ -f "$project_dir/package-lock.json" ]] && scan_lockfile "$project_dir/package-lock.json"
+        if [[ -f "$project_dir/package-lock.json" ]]; then
+            scan_lockfile "$project_dir/package-lock.json"
+            scan_osv_packages "$project_dir/package-lock.json"
+        fi
         [[ -f "$project_dir/yarn.lock" ]] && scan_lockfile "$project_dir/yarn.lock"
         [[ -f "$project_dir/pnpm-lock.yaml" ]] && scan_lockfile "$project_dir/pnpm-lock.yaml"
 
@@ -536,6 +542,20 @@ scan_source_files() {
             echo "SECRET|$file|$file_type|private_key"
         fi
 
+        # Check for Base64 obfuscation (large encoded payloads)
+        if [[ ! "$file" =~ \.(min|bundle)\.(js|mjs|cjs)$ ]]; then
+            # Large Base64 strings in atob() or Buffer.from()
+            if grep -qE 'atob\(["\x27][A-Za-z0-9+/=]{100,}["\x27]\)|Buffer\.from\(["\x27][A-Za-z0-9+/=]{100,}["\x27]' "$file" 2>/dev/null; then
+                echo "OBFUSCATION|$file|$file_type|base64"
+            # Hex-encoded strings (common in malware)
+            elif grep -qE '(\\x[0-9a-fA-F]{2}){30,}' "$file" 2>/dev/null; then
+                echo "OBFUSCATION|$file|$file_type|hex"
+            # Long single lines without being a known minified file
+            elif [[ "$file_type" == "source" ]] && awk 'length > 1000 && !/^[[:space:]]*(\/\/|\/?\*|#)/ { found=1; exit } END { exit !found }' "$file" 2>/dev/null; then
+                echo "OBFUSCATION|$file|$file_type|minified"
+            fi
+        fi
+
     done < <(find "$dir" \( -name "*.js" -o -name "*.ts" -o -name "*.mjs" \) -type f -size -500k -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/.next/*" 2>/dev/null | head -2000)
 }
 
@@ -590,6 +610,62 @@ scan_npm_audit() {
         pkg = ""; sev = ""
     }
     '
+}
+
+# Query OSV.dev API for malware (MAL-* entries)
+query_osv_malware() {
+    local pkg="$1" ver="$2" lockfile="$3"
+    [[ $USE_ONLINE_DB -eq 0 ]] && return
+    command -v curl &>/dev/null || return
+
+    local response
+    response=$(curl -s --connect-timeout 2 --max-time 5 \
+        -d "{\"version\":\"$ver\",\"package\":{\"name\":\"$pkg\",\"ecosystem\":\"npm\"}}" \
+        "$OSV_API_URL" 2>/dev/null) || return
+
+    # Check for MAL-* entries (malware, not regular CVEs)
+    if echo "$response" | grep -q '"MAL-'; then
+        local mal_id
+        mal_id=$(echo "$response" | grep -o '"MAL-[0-9]*-[0-9]*"' | head -1 | tr -d '"')
+        [[ -n "$mal_id" ]] && echo "OSV_MALWARE|$lockfile|$pkg@$ver|$mal_id"
+    fi
+}
+
+# Scan lockfile packages against OSV.dev
+scan_osv_packages() {
+    local lockfile="$1"
+    [[ $USE_ONLINE_DB -eq 0 ]] && return
+    command -v curl &>/dev/null || return
+
+    local filename="${lockfile##*/}"
+    local -a checked_pkgs=()
+
+    case "$filename" in
+        package-lock.json)
+            # Extract packages from package-lock.json v2/v3
+            while IFS= read -r line; do
+                # Match "node_modules/pkgname": { ... "version": "x.y.z"
+                if [[ "$line" =~ \"node_modules/([^\"]+)\" ]]; then
+                    current_pkg="${BASH_REMATCH[1]}"
+                elif [[ -n "$current_pkg" ]] && [[ "$line" =~ \"version\":[[:space:]]*\"([^\"]+)\" ]]; then
+                    local ver="${BASH_REMATCH[1]}"
+                    # Avoid duplicate checks
+                    local pkg_ver="$current_pkg@$ver"
+                    local already_checked=0
+                    for checked in "${checked_pkgs[@]}"; do
+                        [[ "$checked" == "$pkg_ver" ]] && already_checked=1 && break
+                    done
+                    if [[ $already_checked -eq 0 ]]; then
+                        checked_pkgs+=("$pkg_ver")
+                        # Only check top-level deps to limit API calls (first 50)
+                        [[ ${#checked_pkgs[@]} -gt 50 ]] && break
+                        query_osv_malware "$current_pkg" "$ver" "$lockfile"
+                    fi
+                    current_pkg=""
+                fi
+            done < "$lockfile"
+            ;;
+    esac
 }
 
 scan_system_locations() {
@@ -774,6 +850,32 @@ analyze_phase() {
                 fi
                 ;;
 
+            OBFUSCATION)
+                local file_type="$extra1"
+                local obf_type="$extra2"
+                local obf_name
+                case "$obf_type" in
+                    base64) obf_name="Large Base64-encoded payload" ;;
+                    hex) obf_name="Hex-encoded payload" ;;
+                    minified) obf_name="Suspicious minified code" ;;
+                    *) obf_name="Obfuscated code" ;;
+                esac
+                if [[ "$file_type" == "test_file" ]] || [[ "$file_type" == "sandbox" ]]; then
+                    emit_finding "LOW" "$file" "$obf_name (test/example)" "obfuscation" "0.3" \
+                        "Likely test data - verify manually"
+                else
+                    emit_finding "HIGH" "$file" "$obf_name detected" "obfuscation" "0.8" \
+                        "Review file for hidden malicious code"
+                fi
+                ;;
+
+            OSV_MALWARE)
+                local pkg="$extra1"
+                local mal_id="$extra2"
+                emit_finding "CRITICAL" "$file" "OSV malware: $pkg ($mal_id)" "osv" "1.0" \
+                    "Remove package immediately, check osv.dev/$mal_id"
+                ;;
+
             MALICIOUS_WORKFLOW)
                 emit_finding "CRITICAL" "$file" "Known malicious GitHub workflow" "workflow" "1.0" \
                     "Delete workflow, check for unauthorized actions"
@@ -867,6 +969,79 @@ report_json() {
 
     echo ""
     echo "  ]"
+    echo "}"
+}
+
+severity_to_cvss() {
+    case "$1" in
+        CRITICAL) echo "9.0" ;;
+        HIGH)     echo "7.0" ;;
+        MEDIUM)   echo "5.0" ;;
+        LOW)      echo "3.0" ;;
+        *)        echo "5.0" ;;
+    esac
+}
+
+report_sarif() {
+    local scan_dir="${SEARCH_DIR:-$(pwd)}"
+
+    cat << 'SARIF_HEADER'
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [{
+    "tool": {
+      "driver": {
+SARIF_HEADER
+    echo "        \"name\": \"Shoo\","
+    echo "        \"version\": \"$VERSION\","
+    echo "        \"informationUri\": \"https://github.com/jplansink/shoo\","
+    echo "        \"rules\": []"
+    echo "      }"
+    echo "    },"
+    echo "    \"results\": ["
+
+    local first=1
+    for finding in "${FINDINGS[@]}"; do
+        IFS='|' read -r severity file message detector confidence advice <<< "$finding"
+        [[ -z "$severity" ]] && continue
+
+        [[ $first -eq 0 ]] && echo ","
+        first=0
+
+        local level="warning"
+        [[ "$severity" == "CRITICAL" ]] && level="error"
+        [[ "$severity" == "HIGH" ]] && level="error"
+        [[ "$severity" == "LOW" ]] && level="note"
+
+        local cwe
+        cwe=$(get_cwe_for_detector "$detector")
+        local cvss
+        cvss=$(severity_to_cvss "$severity")
+
+        # Make path relative
+        local rel_file="$file"
+        [[ "$file" == "$scan_dir"/* ]] && rel_file="${file#"$scan_dir"/}"
+
+        echo "      {"
+        echo "        \"ruleId\": \"shoo/$detector\","
+        echo "        \"level\": \"$level\","
+        echo "        \"message\": {\"text\": \"$(json_escape "$message")\"},"
+        echo "        \"locations\": [{"
+        echo "          \"physicalLocation\": {"
+        echo "            \"artifactLocation\": {\"uri\": \"$(json_escape "$rel_file")\"}"
+        echo "          }"
+        echo "        }],"
+        echo "        \"properties\": {"
+        echo "          \"security-severity\": \"$cvss\""
+        [[ -n "$cwe" ]] && echo "          ,\"tags\": [\"$cwe\"]"
+        echo "        }"
+        echo -n "      }"
+    done
+
+    echo ""
+    echo "    ]"
+    echo "  }]"
     echo "}"
 }
 
@@ -1089,9 +1264,10 @@ Options:
   -v           Verbose output with remediation
   -q           Quiet mode (exit code only)
   --json       Output JSON for CI integration
+  --sarif      Output SARIF for GitHub Security tab
   --all        Scan directory AND system locations
   --system     Scan system only (npm globals, VS Code, cache)
-  --offline    Skip online malware database
+  --offline    Skip online databases (OSV.dev, aikido.dev)
 
 Exit codes:
   0  Clean
@@ -1104,6 +1280,7 @@ Examples:
   shoo ~/projects     Scan specific directory
   shoo --all          Scan current directory + system
   shoo --system       Scan system only
+  shoo --sarif        GitHub Actions integration
 EOF
 }
 
@@ -1137,6 +1314,11 @@ parse_args() {
                 ;;
             --json)
                 OUTPUT_FORMAT="json"
+                VERBOSITY=0
+                shift
+                ;;
+            --sarif)
+                OUTPUT_FORMAT="sarif"
                 VERBOSITY=0
                 shift
                 ;;
@@ -1217,11 +1399,11 @@ main() {
     check_online_database
 
     # Phase 3: Report findings
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        report_json
-    else
-        report_phase
-    fi
+    case "$OUTPUT_FORMAT" in
+        json)  report_json ;;
+        sarif) report_sarif ;;
+        *)     report_phase ;;
+    esac
 
     # Exit code based on severity
     [[ $CRITICAL_COUNT -gt 0 ]] && exit 1
