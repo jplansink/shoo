@@ -50,12 +50,14 @@ Total: 2 (critical: 1, high: 1)
 CRITICAL
   ✗ Compromised version: nx@21.5.0 (nx/Singularity) [CWE-506]
     package-lock.json
+    https://cwe.mitre.org/data/definitions/506.html
+    → Remove package, clean reinstall, rotate credentials
 
 HIGH
   ✗ Suspicious postinstall script (curl/wget/eval) [CWE-94]
     node_modules/sketchy-pkg/package.json
-
-Use -v for remediation steps
+    https://cwe.mitre.org/data/definitions/94.html
+    → Review script contents before running npm install
 ```
 
 ## Usage
@@ -65,10 +67,9 @@ Use -v for remediation steps
 ./shoo ~/projects     # Scan specific directory
 ./shoo --all          # Scan directory + system
 ./shoo --system       # Scan system only
-./shoo -v             # Verbose output
 ./shoo -q             # Quiet (exit code only)
-./shoo --json         # JSON output for CI
-./shoo --sarif        # SARIF output for GitHub Security
+./shoo --json         # JSON output
+./shoo --sarif        # SARIF output (GitHub Security)
 ./shoo --offline      # Skip online databases
 ```
 

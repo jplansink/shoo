@@ -56,8 +56,6 @@ declare -i HIGH_COUNT=0
 declare -i MEDIUM_COUNT=0
 declare -i LOW_COUNT=0
 
-# Track unique CWEs for reference footer
-declare -a CWES_USED=()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SIGNATURES
@@ -187,29 +185,14 @@ get_cwe_for_detector() {
     esac
 }
 
-# CWE descriptions for reference footer
-get_cwe_info() {
-    case "$1" in
-        CWE-506)  echo "Embedded Malicious Code" ;;
-        CWE-94)   echo "Code Injection" ;;
-        CWE-200)  echo "Exposure of Sensitive Information" ;;
-        CWE-912)  echo "Hidden Functionality" ;;
-        CWE-522)  echo "Insufficiently Protected Credentials" ;;
-        CWE-798)  echo "Use of Hard-coded Credentials" ;;
-        CWE-1035) echo "Vulnerable Third Party Component" ;;
-        CWE-1104) echo "Use of Unmaintained Third Party Components" ;;
-    esac
-}
-
-# Track unique CWE for reference footer (bash 3 compatible)
-track_cwe() {
+# CWE URL helper
+get_cwe_url() {
     local cwe="$1"
     [[ -z "$cwe" ]] && return
-    for existing in "${CWES_USED[@]}"; do
-        [[ "$existing" == "$cwe" ]] && return
-    done
-    CWES_USED+=("$cwe")
+    local id="${cwe#CWE-}"
+    echo "https://cwe.mitre.org/data/definitions/${id}.html"
 }
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS
@@ -643,6 +626,7 @@ scan_osv_packages() {
     case "$filename" in
         package-lock.json)
             # Extract packages from package-lock.json v2/v3
+            # shellcheck disable=SC2094
             while IFS= read -r line; do
                 # Match "node_modules/pkgname": { ... "version": "x.y.z"
                 if [[ "$line" =~ \"node_modules/([^\"]+)\" ]]; then
@@ -1100,24 +1084,29 @@ report_phase() {
         fi
     }
 
+    # Helper to print a finding with inline URL
+    print_finding() {
+        local color="$1" symbol="$2" file="$3" message="$4" detector="$5" advice="$6"
+        local cwe cwe_url
+        cwe=$(get_cwe_for_detector "$detector")
+        cwe_url=$(get_cwe_url "$cwe")
+
+        if [[ -n "$cwe" ]]; then
+            echo -e "  ${color}${symbol}${NC} $message ${DIM}[$cwe]${NC}"
+        else
+            echo -e "  ${color}${symbol}${NC} $message"
+        fi
+        echo "    $(relative_path "$file")"
+        [[ -n "$cwe_url" ]] && echo -e "    ${DIM}$cwe_url${NC}"
+        [[ -n "$advice" ]] && echo -e "    ${DIM}→ $advice${NC}"
+    }
+
     # Report critical
     if [[ ${#critical[@]} -gt 0 ]]; then
         echo -e "${RED}CRITICAL${NC}"
         for finding in "${critical[@]}"; do
             IFS='|' read -r _ file message detector _ advice <<< "$finding"
-            local cwe
-            cwe=$(get_cwe_for_detector "$detector")
-            track_cwe "$cwe"
-            if [[ -n "$cwe" ]]; then
-                echo -e "  ${RED}✗${NC} $message ${DIM}[$cwe]${NC}"
-            else
-                echo -e "  ${RED}✗${NC} $message"
-            fi
-            echo "    $(relative_path "$file")"
-            # Advice only in verbose mode
-            if [[ $VERBOSITY -ge 2 ]] && [[ -n "$advice" ]]; then
-                echo -e "    ${DIM}→ $advice${NC}"
-            fi
+            print_finding "$RED" "✗" "$file" "$message" "$detector" "$advice"
         done
         echo ""
     fi
@@ -1127,80 +1116,29 @@ report_phase() {
         echo -e "${YELLOW}HIGH${NC}"
         for finding in "${high[@]}"; do
             IFS='|' read -r _ file message detector _ advice <<< "$finding"
-            local cwe
-            cwe=$(get_cwe_for_detector "$detector")
-            track_cwe "$cwe"
-            if [[ -n "$cwe" ]]; then
-                echo -e "  ${YELLOW}✗${NC} $message ${DIM}[$cwe]${NC}"
-            else
-                echo -e "  ${YELLOW}✗${NC} $message"
-            fi
-            echo "    $(relative_path "$file")"
-            if [[ $VERBOSITY -ge 2 ]] && [[ -n "$advice" ]]; then
-                echo -e "    ${DIM}→ $advice${NC}"
-            fi
+            print_finding "$YELLOW" "✗" "$file" "$message" "$detector" "$advice"
         done
         echo ""
     fi
 
-    # Report medium (verbose only)
-    if [[ ${#medium[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
+    # Report medium
+    if [[ ${#medium[@]} -gt 0 ]]; then
         echo -e "${BLUE}MEDIUM${NC}"
         for finding in "${medium[@]}"; do
             IFS='|' read -r _ file message detector _ advice <<< "$finding"
-            local cwe
-            cwe=$(get_cwe_for_detector "$detector")
-            track_cwe "$cwe"
-            if [[ -n "$cwe" ]]; then
-                echo -e "  ? $message ${DIM}[$cwe]${NC}"
-            else
-                echo "  ? $message"
-            fi
-            echo "    $(relative_path "$file")"
-            [[ -n "$advice" ]] && echo -e "    ${DIM}→ $advice${NC}"
+            print_finding "$BLUE" "?" "$file" "$message" "$detector" "$advice"
         done
         echo ""
     fi
 
-    # Report low (verbose only)
-    if [[ ${#low[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
+    # Report low
+    if [[ ${#low[@]} -gt 0 ]]; then
         echo -e "${DIM}LOW${NC}"
         for finding in "${low[@]}"; do
             IFS='|' read -r _ file message detector _ advice <<< "$finding"
-            local cwe
-            cwe=$(get_cwe_for_detector "$detector")
-            track_cwe "$cwe"
-            if [[ -n "$cwe" ]]; then
-                echo -e "  - $message ${DIM}[$cwe]${NC}"
-            else
-                echo "  - $message"
-            fi
-            echo "    $(relative_path "$file")"
-            [[ -n "$advice" ]] && echo -e "    ${DIM}→ $advice${NC}"
+            print_finding "$DIM" "-" "$file" "$message" "$detector" "$advice"
         done
         echo ""
-    fi
-
-    # Hint for more info (normal mode only)
-    if [[ $VERBOSITY -eq 1 ]]; then
-        if [[ $CRITICAL_COUNT -gt 0 ]] || [[ $HIGH_COUNT -gt 0 ]]; then
-            echo "Use -v for remediation steps"
-        elif [[ $MEDIUM_COUNT -gt 0 ]] || [[ $LOW_COUNT -gt 0 ]]; then
-            echo "Use -v for details"
-        fi
-    fi
-
-    # Print CWE references (verbose only)
-    if [[ ${#CWES_USED[@]} -gt 0 ]] && [[ $VERBOSITY -ge 2 ]]; then
-        echo ""
-        echo "References:"
-        for cwe in "${CWES_USED[@]}"; do
-            local desc id
-            desc=$(get_cwe_info "$cwe")
-            id="${cwe#CWE-}"
-            echo "  $cwe: $desc"
-            echo "  https://cwe.mitre.org/data/definitions/${id}.html"
-        done
     fi
 }
 
@@ -1261,13 +1199,12 @@ Shoo 👻 npm supply chain scanner
 Usage: shoo [options] [directory]
 
 Options:
-  -v           Verbose output with remediation
-  -q           Quiet mode (exit code only)
-  --json       Output JSON for CI integration
-  --sarif      Output SARIF for GitHub Security tab
-  --all        Scan directory AND system locations
-  --system     Scan system only (npm globals, VS Code, cache)
-  --offline    Skip online databases (OSV.dev, aikido.dev)
+  -q, --quiet   Exit code only (for CI)
+  --json        JSON output
+  --sarif       SARIF output (GitHub Security tab)
+  --all         Scan directory + system
+  --system      System only (npm globals, VS Code, cache)
+  --offline     Skip online databases
 
 Exit codes:
   0  Clean
@@ -1278,8 +1215,7 @@ Exit codes:
 Examples:
   shoo                Scan current directory
   shoo ~/projects     Scan specific directory
-  shoo --all          Scan current directory + system
-  shoo --system       Scan system only
+  shoo --all          Scan directory + system
   shoo --sarif        GitHub Actions integration
 EOF
 }
@@ -1290,10 +1226,6 @@ parse_args() {
             -h|--help)
                 show_help
                 exit 0
-                ;;
-            -v|--verbose)
-                VERBOSITY=2
-                shift
                 ;;
             -q|--quiet)
                 VERBOSITY=0
