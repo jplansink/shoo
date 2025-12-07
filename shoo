@@ -13,7 +13,7 @@
 
 set -o pipefail
 
-readonly VERSION="2.2.0"
+readonly VERSION="2.3.0"
 readonly MALWARE_DB_URL="https://malware-list.aikido.dev/malware_predictions.json"
 readonly OSV_API_URL="https://api.osv.dev/v1/query"
 readonly CACHE_DIR="${HOME}/.cache/shoo"
@@ -72,7 +72,7 @@ readonly -a MALWARE_FILES=(
 readonly MALWARE_UUID="bb8ca5f6-4175-45d2-b042-fc9ebb8170b7"
 
 # Exfiltration domains
-readonly EXFIL_DOMAINS="webhook\.site|pastebin\.com|paste\.ee|hastebin\.com"
+readonly EXFIL_DOMAINS="webhook\.site|pastebin\.com|paste\.ee|hastebin\.com|pipedream\.net|requestbin\.com|burpcollaborator\.net|ngrok\.io|localtunnel\.me"
 
 # Compromised package versions (format: "pkg@version|attack_name")
 readonly BAD_VERSIONS="
@@ -144,6 +144,16 @@ kill-port@2.0.3|Shai-Hulud 2.0
 shell-exec@1.1.3|Shai-Hulud 2.0
 shell-exec@1.1.4|Shai-Hulud 2.0
 get-them-args@1.3.3|Shai-Hulud 2.0
+event-stream@3.3.6|event-stream Bitcoin wallet attack (2018)
+flatmap-stream@0.1.1|event-stream Bitcoin wallet attack (2018)
+ua-parser-js@0.7.29|ua-parser-js Oct 2021 compromise
+ua-parser-js@0.8.0|ua-parser-js Oct 2021 compromise
+ua-parser-js@1.0.0|ua-parser-js Oct 2021 compromise
+coa@2.0.3|coa Nov 2021 compromise
+coa@2.0.4|coa Nov 2021 compromise
+rc@1.2.9|rc Nov 2021 compromise
+colors@1.4.44-liberty-2|colors sabotage Jan 2022
+faker@6.6.6|faker sabotage Jan 2022
 "
 
 # Targeted organizations (Shai-Hulud 2.0 targets)
@@ -470,6 +480,40 @@ scan_lockfile() {
 
         [[ $found -eq 1 ]] && echo "BAD_VERSION|$file|$pkg_version|$attack_name"
     done <<< "$BAD_VERSIONS"
+
+    # Specific check for flatmap-stream (event-stream attack payload)
+    # This dependency should NEVER appear in lockfiles - it was injected malware
+    case "$filename" in
+        package-lock.json)
+            if grep -q '"node_modules/flatmap-stream"' "$file" 2>/dev/null; then
+                local flatmap_ver
+                flatmap_ver=$(awk '/"node_modules\/flatmap-stream"/ { found=1; next }
+                    found && /"version":/ {
+                        gsub(/.*"version":[[:space:]]*"|".*/, "");
+                        print;
+                        exit
+                    }' "$file" 2>/dev/null)
+                echo "FLATMAP_STREAM|$file|${flatmap_ver:-unknown}"
+            fi
+            ;;
+        yarn.lock)
+            if grep -q '^flatmap-stream@\|^"flatmap-stream@' "$file" 2>/dev/null; then
+                local flatmap_ver
+                flatmap_ver=$(awk '/^flatmap-stream@|^"flatmap-stream@/ { next }
+                    /^[^ ]/ { exit }
+                    /version / { gsub(/.*version "/, ""); gsub(/".*/, ""); print; exit }
+                    ' "$file" 2>/dev/null)
+                echo "FLATMAP_STREAM|$file|${flatmap_ver:-unknown}"
+            fi
+            ;;
+        pnpm-lock.yaml)
+            if grep -qE "(^|/)flatmap-stream@" "$file" 2>/dev/null; then
+                local flatmap_ver
+                flatmap_ver=$(grep -oE "flatmap-stream@[0-9.]+" "$file" 2>/dev/null | head -1 | cut -d@ -f2)
+                echo "FLATMAP_STREAM|$file|${flatmap_ver:-unknown}"
+            fi
+            ;;
+    esac
 }
 
 scan_source_files() {
@@ -706,11 +750,36 @@ scan_system_locations() {
     fi
 
     # Shell configs (nx malware tampered with these)
-    for rcfile in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    # Expanded to detect curl-to-shell, base64 execution, eval injection, PATH manipulation
+    for rcfile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
         if [[ -f "$rcfile" ]]; then
             ((FILES_SCANNED++))
+
+            # Known nx/Singularity malware patterns
             if grep -qE "shutdown|s1ngularity|singularity" "$rcfile" 2>/dev/null; then
-                echo "SHELL_TAMPER|$rcfile"
+                echo "SHELL_TAMPER|$rcfile|nx_malware"
+            fi
+
+            # Curl/wget piped to shell (malicious remote script execution)
+            if grep -qE "(curl|wget).*\|.*(bash|sh|zsh|eval)" "$rcfile" 2>/dev/null; then
+                echo "SHELL_EXEC|$rcfile|curl_to_shell"
+            fi
+
+            # Base64 decoded execution (obfuscated commands)
+            if grep -qE "base64.*-d.*\|.*(bash|sh|eval)" "$rcfile" 2>/dev/null; then
+                echo "SHELL_EXEC|$rcfile|base64_exec"
+            fi
+
+            # eval with variables (code injection vector)
+            # Exclude common legitimate patterns: direnv, conda, nvm, rbenv, pyenv, homebrew, dircolors, lesspipe
+            if grep -E 'eval.*\$' "$rcfile" 2>/dev/null | grep -qvE "direnv|conda|nvm|rbenv|pyenv|homebrew|HOMEBREW|dircolors|lesspipe" 2>/dev/null; then
+                echo "SHELL_EVAL|$rcfile|eval_injection"
+            fi
+
+            # Suspicious PATH modifications (backdoor persistence)
+            # Exclude common legitimate patterns: homebrew, local bins
+            if grep -E "PATH=" "$rcfile" 2>/dev/null | grep -qE "PATH=(/tmp|/var/tmp|\.\:|:\.\:)" 2>/dev/null; then
+                echo "SHELL_PATH|$rcfile|suspicious_path"
             fi
         fi
     done
@@ -755,6 +824,12 @@ analyze_phase() {
             GLOBAL_BAD_VERSION)
                 emit_finding "CRITICAL" "$file global" "Compromised global package: $extra1 ($extra2)" "versions" "1.0" \
                     "npm uninstall -g ${extra1%@*}, rotate credentials"
+                ;;
+
+            FLATMAP_STREAM)
+                local ver="$extra1"
+                emit_finding "CRITICAL" "$file" "Malicious dependency detected: flatmap-stream@${ver} (event-stream attack)" "versions" "1.0" \
+                    "Delete immediately - this package was malware injected in 2018"
                 ;;
 
             EXFILTRATION)
@@ -894,8 +969,33 @@ analyze_phase() {
                 ;;
 
             SHELL_TAMPER)
-                emit_finding "CRITICAL" "$file" "Shell config tampering detected" "shell" "0.95" \
+                local tamper_type="$extra1"
+                emit_finding "CRITICAL" "$file" "Shell config tampering detected ($tamper_type)" "shell" "0.95" \
                     "Review and restore shell config, check for 'shutdown' commands"
+                ;;
+
+            SHELL_EXEC)
+                local exec_type="$extra1"
+                case "$exec_type" in
+                    curl_to_shell)
+                        emit_finding "CRITICAL" "$file" "Remote script execution via curl/wget pipe" "shell" "0.95" \
+                            "Review command - likely malicious download and execute"
+                        ;;
+                    base64_exec)
+                        emit_finding "CRITICAL" "$file" "Obfuscated command execution via base64 decode" "shell" "0.9" \
+                            "Review decoded content - likely hidden malicious code"
+                        ;;
+                esac
+                ;;
+
+            SHELL_EVAL)
+                emit_finding "HIGH" "$file" "Suspicious eval with variable (code injection risk)" "shell" "0.75" \
+                    "Review eval usage - may allow arbitrary code execution"
+                ;;
+
+            SHELL_PATH)
+                emit_finding "HIGH" "$file" "Suspicious PATH modification (backdoor risk)" "shell" "0.8" \
+                    "Review PATH change - /tmp or current directory in PATH is dangerous"
                 ;;
         esac
     done

@@ -2,6 +2,38 @@
 
 All notable changes to Shoo will be documented in this file.
 
+## [2.3.0] - 2025-12-07
+
+### Added
+- **Historic attack detection** - 10+ additional compromised package versions from 2018-2022:
+  - event-stream@3.3.6 (Bitcoin wallet stealer, 2018)
+  - flatmap-stream@0.1.1 (event-stream attack payload)
+  - ua-parser-js@0.7.29/0.8.0/1.0.0 (crypto miner + password stealer, Oct 2021)
+  - coa@2.0.3/2.0.4 (data exfiltration, Nov 2021)
+  - rc@1.2.9 (data exfiltration, Nov 2021)
+  - colors@1.4.44-liberty-2 (sabotage, Jan 2022)
+  - faker@6.6.6 (sabotage, Jan 2022)
+
+- **Extended exfiltration domains**:
+  - pipedream.net, requestbin.com, burpcollaborator.net, ngrok.io, localtunnel.me
+
+- **Enhanced shell config attack detection**:
+  - curl/wget piped to shell (remote script execution)
+  - base64 decoded execution (obfuscated commands)
+  - eval with variables (code injection)
+  - Suspicious PATH modifications (backdoor persistence)
+
+- **Targeted flatmap-stream lockfile scanning** - Defense-in-depth for 2018 event-stream attack
+
+### Changed
+- Shell config scanning now checks .bash_profile and .profile in addition to .bashrc/.zshrc
+- Improved eval detection with exclusions for direnv, conda, nvm, rbenv, pyenv, homebrew
+
+### Security
+- Addresses gaps identified in security audit vs Trivy/Gitleaks
+- Covers major historic npm supply chain attacks from 2018-2022
+- Detects advanced shell configuration persistence techniques
+
 ## [2.2.0] - 2025-12-04
 
 ### Added
