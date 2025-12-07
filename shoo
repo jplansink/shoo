@@ -771,8 +771,8 @@ scan_system_locations() {
             fi
 
             # eval with variables (code injection vector)
-            # Exclude common legitimate patterns: direnv, conda, nvm, rbenv, pyenv, homebrew
-            if grep -E 'eval.*\$' "$rcfile" 2>/dev/null | grep -qvE "direnv|conda|nvm|rbenv|pyenv|homebrew|HOMEBREW" 2>/dev/null; then
+            # Exclude common legitimate patterns: direnv, conda, nvm, rbenv, pyenv, homebrew, dircolors, lesspipe
+            if grep -E 'eval.*\$' "$rcfile" 2>/dev/null | grep -qvE "direnv|conda|nvm|rbenv|pyenv|homebrew|HOMEBREW|dircolors|lesspipe" 2>/dev/null; then
                 echo "SHELL_EVAL|$rcfile|eval_injection"
             fi
 
