@@ -47,11 +47,20 @@ All notable changes to Shoo will be documented in this file.
 - **Crypto typosquat stealer detection** (Mar 2026):
   - raydium-bs58, base-x-64, bs58-basic, base_xd, ethersproject-wallet
 
-- **45+ new compromised package versions** across 8 attack campaigns
+- **eslint-config-prettier phishing compromise** (Jul 2025):
+  - eslint-config-prettier@8.10.1, 9.1.1, 10.1.6, 10.1.7
+
+- **rand-user-agent RAT** (May 2025):
+  - rand-user-agent@1.0.110, 2.0.83, 2.0.84
+
+- **Extended nx/Singularity scoped packages**:
+  - @nx/devkit, @nx/js, @nx/node, @nx/workspace, @nx/eslint, @nx/enterprise-cloud, @nx/key
+
+- **60+ new compromised package versions** across 11 attack campaigns
 
 ### Changed
 - Version bump to 3.0.0 (major: new detection categories added)
-- Extended exfiltration domains: sfrclak.com, scan.aquasecurtiy.org
+- Extended exfiltration domains: sfrclak.com, scan.aquasecurtiy.org, 0x9c.xyz, checkmarx.zone
 - Extended targeted organizations: @aifabrix, @iflow-mcp, @usebioerhold8733, @shadanai, @qqbrowser
 - System scan now checks AI tool configs and git hooks
 
