@@ -111,7 +111,9 @@ Exit codes: `0` clean, `1` critical, `2` high, `3` medium
 | TeamPCP/Trivy (Mar 2026) | trivy-action, 66+ npm packages |
 | tj-actions (Mar 2025) | CVE-2025-30066, CVE-2025-30154 |
 | Crypto typosquats (Mar 2026) | raydium-bs58, ethersproject-wallet + 3 more |
-| nx/Singularity | nx@20.9.0-21.8.0 |
+| eslint-prettier (Jul 2025) | eslint-config-prettier@8.10.1-10.1.7 |
+| rand-user-agent (May 2025) | rand-user-agent@1.0.110, 2.0.83, 2.0.84 |
+| nx/Singularity | nx@20.9.0-21.8.0 + @nx/* scoped packages |
 | debug/chalk | debug@4.4.2, chalk@5.6.1 + 16 more |
 | DuckDB | duckdb@1.3.3, @duckdb/node-api@1.3.3 |
 | Shai-Hulud 2.0 | posthog-js, @asyncapi/specs, @ensdomains/ensjs |
