@@ -381,7 +381,8 @@ is_excluded() {
         while IFS= read -r pattern; do
             [[ "$pattern" =~ ^# ]] && continue
             [[ -z "$pattern" ]] && continue
-            [[ "$file" == *$pattern* ]] && return 0
+            # Quote pattern to prevent glob metacharacter expansion
+            [[ "$file" == *"$pattern"* ]] && return 0
         done < "${SEARCH_DIR}/.shooignore"
     fi
 
@@ -786,9 +787,14 @@ query_osv_malware() {
     [[ $USE_ONLINE_DB -eq 0 ]] && return
     command -v curl &>/dev/null || return
 
+    # Sanitize pkg and ver to prevent JSON injection
+    local safe_pkg safe_ver
+    safe_pkg=$(printf '%s' "$pkg" | sed 's/[\\\"]/\\&/g' | tr -d '\n\r')
+    safe_ver=$(printf '%s' "$ver" | sed 's/[\\\"]/\\&/g' | tr -d '\n\r')
+
     local response
     response=$(curl -s --connect-timeout 2 --max-time 5 \
-        -d "{\"version\":\"$ver\",\"package\":{\"name\":\"$pkg\",\"ecosystem\":\"npm\"}}" \
+        -d "{\"version\":\"$safe_ver\",\"package\":{\"name\":\"$safe_pkg\",\"ecosystem\":\"npm\"}}" \
         "$OSV_API_URL" 2>/dev/null) || return
 
     # Check for MAL-* entries (malware, not regular CVEs)
@@ -1236,7 +1242,15 @@ analyze_phase() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' '
+    printf '%s' "$1" | sed \
+        -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g' \
+        -e 's/	/\\t/g' \
+        -e 's/\r/\\r/g' \
+        -e $'s/\x08/\\\\b/g' \
+        -e $'s/\x0c/\\\\f/g' \
+        | tr '\n' ' ' \
+        | tr -d '\000-\011\013-\014\016-\037'
 }
 
 report_json() {
@@ -1496,14 +1510,38 @@ fetch_malware_database() {
         fi
     fi
 
-    # Fetch fresh database
+    # Fetch fresh database to a temp file first, then validate before caching
     log_info "Fetching malware database..."
+    local tmp_file
+    tmp_file=$(mktemp "${CACHE_DIR}/malware.XXXXXX") || return 1
+
+    local fetch_ok=0
     if command -v curl &>/dev/null; then
-        curl -s --connect-timeout 5 --max-time 15 -o "$cache_file" "$MALWARE_DB_URL" 2>/dev/null && return 0
+        curl -s --connect-timeout 5 --max-time 15 -o "$tmp_file" "$MALWARE_DB_URL" 2>/dev/null && fetch_ok=1
     elif command -v wget &>/dev/null; then
-        wget -q --timeout=5 -O "$cache_file" "$MALWARE_DB_URL" 2>/dev/null && return 0
+        wget -q --timeout=5 -O "$tmp_file" "$MALWARE_DB_URL" 2>/dev/null && fetch_ok=1
     fi
 
+    if [[ $fetch_ok -eq 1 ]]; then
+        # Basic integrity check: must be valid JSON array and non-trivially small
+        local file_size
+        file_size=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+        if [[ $file_size -lt 100 ]]; then
+            log_warn "Fetched malware database suspiciously small (${file_size} bytes) - discarding"
+            rm -f "$tmp_file"
+            return 1
+        fi
+        # Verify it starts with valid JSON (array or object)
+        if ! head -c 1 "$tmp_file" 2>/dev/null | grep -qE '[\[{]'; then
+            log_warn "Fetched malware database is not valid JSON - discarding"
+            rm -f "$tmp_file"
+            return 1
+        fi
+        mv -f "$tmp_file" "$cache_file"
+        return 0
+    fi
+
+    rm -f "$tmp_file"
     log_warn "Could not fetch malware database - using hardcoded signatures"
     return 1
 }
@@ -1622,7 +1660,7 @@ main() {
     # Phase 1: Scan (output to temp file to separate from progress messages)
     local scan_results
     scan_results=$(mktemp)
-    trap 'rm -f "'"$scan_results"'"' EXIT
+    trap "rm -f \"$scan_results\"" EXIT
 
     # Scan project directory if enabled
     if [[ $SCAN_PROJECTS -eq 1 ]] && [[ -n "$SEARCH_DIR" ]]; then
