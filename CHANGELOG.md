@@ -2,6 +2,64 @@
 
 All notable changes to Shoo will be documented in this file.
 
+## [3.0.0] - 2026-04-01
+
+### Added
+- **Axios/UNC1069 compromise detection** (Mar 2026) - North Korea-nexus attack on axios with 100M+ weekly downloads:
+  - axios@1.14.1, axios@0.30.4, plain-crypto-js@4.2.1
+  - Phantom dependency detection: `plain-crypto-js` should never appear in lockfiles (like flatmap-stream)
+  - C2 domain: sfrclak.com
+
+- **SANDWORM_MODE worm detection** (Feb 2026) - 19 typosquatting packages with worm-like self-propagation:
+  - claud-code, cloude-code, cloude, crypto-locale, detect-cache, format-defaults, hardhta,
+    locale-loader-pro, naniod, node-native-bridge, opencraw, parse-compat, rimarf, scan-store,
+    secp256, suport-color, veim, yarsg, crypto-reader-info
+
+- **AI toolchain MCP server injection detection** - Scans Claude Desktop, Cursor, VS Code Continue,
+  and Windsurf configs for rogue MCP servers injected by SANDWORM_MODE
+
+- **GlassWorm unicode malware detection** (Jan-Mar 2026) - Invisible unicode payloads across 400+ repos:
+  - @aifabrix/miso-client@4.7.2, @iflow-mcp/watercrawl-watercrawl-mcp@1.3.0-1.3.4
+  - Marker variable detection (`lzcdrtfxyqiplpd`)
+  - Persistence file detection (~/init.json)
+
+- **React Native package hijack detection** (Mar 2026) - GlassWorm-linked account takeovers:
+  - react-native-international-phone-number@0.11.8, 0.12.1-0.12.3
+  - react-native-country-select@0.3.91
+
+- **Cline/Clinejection compromise detection** (Feb 2026):
+  - cline@2.3.0 (silently installs OpenClaw via postinstall)
+  - New detection: postinstall scripts that run `npm install -g` (global install)
+
+- **TeamPCP/Trivy campaign indicators** (Mar 2026):
+  - C2 domain: scan.aquasecurtiy.org
+  - aquasecurity/trivy-action added to compromised actions list
+
+- **GitHub Actions SHA pinning audit** - Flags known-compromised actions used without commit SHA pinning:
+  - tj-actions/changed-files (CVE-2025-30066)
+  - reviewdog/action-setup (CVE-2025-30154)
+  - aquasecurity/trivy-action (CVE-2026-33634)
+  - aquasecurity/setup-trivy
+
+- **Git hook persistence detection** - Scans global git hook templates for suspicious scripts
+  (SANDWORM_MODE persistence vector)
+
+- **Crypto typosquat stealer detection** (Mar 2026):
+  - raydium-bs58, base-x-64, bs58-basic, base_xd, ethersproject-wallet
+
+- **45+ new compromised package versions** across 8 attack campaigns
+
+### Changed
+- Version bump to 3.0.0 (major: new detection categories added)
+- Extended exfiltration domains: sfrclak.com, scan.aquasecurtiy.org
+- Extended targeted organizations: @aifabrix, @iflow-mcp, @usebioerhold8733, @shadanai, @qqbrowser
+- System scan now checks AI tool configs and git hooks
+
+### Security
+- Covers all major npm supply chain attacks through March 2026
+- Addresses new attack vectors: AI toolchain poisoning, blockchain C2, phantom dependencies
+- Detects North Korea-nexus (UNC1069) and GlassWorm threat actor campaigns
+
 ## [2.3.0] - 2025-12-07
 
 ### Added

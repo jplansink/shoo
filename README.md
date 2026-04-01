@@ -12,6 +12,12 @@ npm supply chain attacks are increasing. Shoo [detects](#what-it-detects), malwa
 
 | Attack | Packages | Impact |
 |--------|----------|--------|
+| Axios/UNC1069 | axios@1.14.1, axios@0.30.4 | 100M+ weekly downloads, North Korea |
+| SANDWORM_MODE | 19 typosquatting packages | AI toolchain poisoning, worm |
+| GlassWorm | 400+ repos, invisible unicode | Blockchain C2, credential theft |
+| TeamPCP/Trivy | trivy-action, 66+ npm packages | CI/CD credential theft |
+| Cline/Clinejection | cline@2.3.0 | AI coding assistant hijack |
+| tj-actions | CVE-2025-30066 | 23K+ repos, CI secret leak |
 | nx/Singularity | nx@20.9.0-21.8.0 | Millions of downloads |
 | debug/chalk | debug@4.4.2, chalk@5.6.1 | Billions of downloads |
 | DuckDB | duckdb@1.3.3, @duckdb/node-api@1.3.3 | Data exfiltration |
@@ -79,13 +85,15 @@ Exit codes: `0` clean, `1` critical, `2` high, `3` medium
 
 | Location | What It Checks |
 |----------|----------------|
-| Lockfiles | Compromised package versions |
-| Source files | Malware patterns, exfiltration endpoints |
-| package.json | Suspicious install scripts |
-| GitHub workflows | Malicious actions, encoded payloads |
+| Lockfiles | Compromised package versions, phantom dependencies |
+| Source files | Malware patterns, exfiltration endpoints, GlassWorm markers |
+| package.json | Suspicious install scripts, global installs |
+| GitHub workflows | Malicious actions, SHA pinning, encoded payloads |
 | VS Code extensions | Unicode malware |
 | npm cache | Cached malware files |
 | Shell configs | Tampering (.bashrc, .zshrc) |
+| AI tool configs | MCP server injection (Claude, Cursor, Continue, Windsurf) |
+| Git hooks | Persistence scripts in global hook templates |
 
 > [!TIP]
 > Use `--system` to scan global packages and VS Code extensions without a project.
@@ -96,6 +104,13 @@ Exit codes: `0` clean, `1` critical, `2` high, `3` medium
 
 | Attack | Packages |
 |--------|----------|
+| Axios/UNC1069 (Mar 2026) | axios@1.14.1, axios@0.30.4, plain-crypto-js |
+| SANDWORM_MODE (Feb 2026) | 19 typosquatting packages (claud-code, suport-color, etc.) |
+| GlassWorm (Jan-Mar 2026) | @aifabrix/miso-client, react-native packages, 400+ repos |
+| Cline/Clinejection (Feb 2026) | cline@2.3.0 |
+| TeamPCP/Trivy (Mar 2026) | trivy-action, 66+ npm packages |
+| tj-actions (Mar 2025) | CVE-2025-30066, CVE-2025-30154 |
+| Crypto typosquats (Mar 2026) | raydium-bs58, ethersproject-wallet + 3 more |
 | nx/Singularity | nx@20.9.0-21.8.0 |
 | debug/chalk | debug@4.4.2, chalk@5.6.1 + 16 more |
 | DuckDB | duckdb@1.3.3, @duckdb/node-api@1.3.3 |
@@ -110,16 +125,20 @@ Plus 1000+ packages from [aikido.dev](https://www.aikido.dev) online database (c
 | Pattern | Examples |
 |---------|----------|
 | Malware files | `setup_bun.js`, `bun_environment.js` |
-| Exfiltration endpoints | `webhook.site`, `pastebin.com` |
+| Phantom dependencies | `plain-crypto-js` (Axios attack payload) |
+| Exfiltration endpoints | `webhook.site`, `sfrclak.com`, `pastebin.com` |
 | Hardcoded secrets | AWS keys, GitHub/npm tokens, private keys |
 | Obfuscated payloads | Base64 blobs, hex encoding, suspicious minification |
 | Destructive code | `rm -rf`, recursive rmSync |
-| Suspicious postinstall | curl/wget/eval in scripts |
-| Unicode obfuscation | Hidden homoglyph characters |
+| Suspicious postinstall | curl/wget/eval in scripts, `npm install -g` |
+| Unicode obfuscation | Hidden homoglyph characters, GlassWorm markers |
 | Malicious workflows | Encoded payloads, bad runners |
+| Unpinned compromised actions | tj-actions, reviewdog, trivy-action without SHA |
 | Shell config tampering | .bashrc, .zshrc modifications |
+| MCP server injection | Rogue AI tool configs (SANDWORM_MODE) |
+| Git hook persistence | Suspicious global git hook scripts |
 | npm audit CVEs | Known vulnerabilities in dependencies |
-| Targeted org typosquatting | @asyncapi, @posthog, @zapier |
+| Targeted org typosquatting | @asyncapi, @posthog, @zapier, @aifabrix |
 
 ### Supported Lockfiles
 
