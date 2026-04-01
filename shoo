@@ -13,7 +13,7 @@
 
 set -o pipefail
 
-readonly VERSION="2.3.0"
+readonly VERSION="3.0.0"
 readonly MALWARE_DB_URL="https://malware-list.aikido.dev/malware_predictions.json"
 readonly OSV_API_URL="https://api.osv.dev/v1/query"
 readonly CACHE_DIR="${HOME}/.cache/shoo"
@@ -72,7 +72,7 @@ readonly -a MALWARE_FILES=(
 readonly MALWARE_UUID="bb8ca5f6-4175-45d2-b042-fc9ebb8170b7"
 
 # Exfiltration domains
-readonly EXFIL_DOMAINS="webhook\.site|pastebin\.com|paste\.ee|hastebin\.com|pipedream\.net|requestbin\.com|burpcollaborator\.net|ngrok\.io|localtunnel\.me"
+readonly EXFIL_DOMAINS="webhook\.site|pastebin\.com|paste\.ee|hastebin\.com|pipedream\.net|requestbin\.com|burpcollaborator\.net|ngrok\.io|localtunnel\.me|sfrclak\.com|scan\.aquasecurtiy\.org"
 
 # Compromised package versions (format: "pkg@version|attack_name")
 readonly BAD_VERSIONS="
@@ -154,16 +154,67 @@ coa@2.0.4|coa Nov 2021 compromise
 rc@1.2.9|rc Nov 2021 compromise
 colors@1.4.44-liberty-2|colors sabotage Jan 2022
 faker@6.6.6|faker sabotage Jan 2022
+axios@1.14.1|Axios/UNC1069 compromise (Mar 2026)
+axios@0.30.4|Axios/UNC1069 compromise (Mar 2026)
+plain-crypto-js@4.2.1|Axios/UNC1069 compromise (Mar 2026)
+@qqbrowser/openclaw-qbot@0.0.130|Axios/UNC1069 related
+@shadanai/openclaw@0.0.1|Axios/UNC1069 related
+claud-code@0.2.1|SANDWORM_MODE worm (Feb 2026)
+cloude-code@0.2.1|SANDWORM_MODE worm (Feb 2026)
+cloude@0.3.0|SANDWORM_MODE worm (Feb 2026)
+crypto-locale@1.0.0|SANDWORM_MODE worm (Feb 2026)
+crypto-reader-info@1.0.0|SANDWORM_MODE worm (Feb 2026)
+detect-cache@1.0.0|SANDWORM_MODE worm (Feb 2026)
+format-defaults@1.0.0|SANDWORM_MODE worm (Feb 2026)
+hardhta@1.0.0|SANDWORM_MODE worm (Feb 2026)
+locale-loader-pro@1.0.0|SANDWORM_MODE worm (Feb 2026)
+naniod@1.0.0|SANDWORM_MODE worm (Feb 2026)
+node-native-bridge@1.0.0|SANDWORM_MODE worm (Feb 2026)
+opencraw@2026.2.17|SANDWORM_MODE worm (Feb 2026)
+parse-compat@1.0.0|SANDWORM_MODE worm (Feb 2026)
+rimarf@1.0.0|SANDWORM_MODE worm (Feb 2026)
+scan-store@1.0.0|SANDWORM_MODE worm (Feb 2026)
+secp256@1.0.0|SANDWORM_MODE worm (Feb 2026)
+suport-color@1.0.1|SANDWORM_MODE worm (Feb 2026)
+veim@2.46.2|SANDWORM_MODE worm (Feb 2026)
+yarsg@18.0.1|SANDWORM_MODE worm (Feb 2026)
+cline@2.3.0|Cline/Clinejection compromise (Feb 2026)
+@aifabrix/miso-client@4.7.2|GlassWorm unicode malware (Mar 2026)
+@iflow-mcp/watercrawl-watercrawl-mcp@1.3.0|GlassWorm unicode malware (Mar 2026)
+@iflow-mcp/watercrawl-watercrawl-mcp@1.3.1|GlassWorm unicode malware (Mar 2026)
+@iflow-mcp/watercrawl-watercrawl-mcp@1.3.2|GlassWorm unicode malware (Mar 2026)
+@iflow-mcp/watercrawl-watercrawl-mcp@1.3.3|GlassWorm unicode malware (Mar 2026)
+@iflow-mcp/watercrawl-watercrawl-mcp@1.3.4|GlassWorm unicode malware (Mar 2026)
+react-native-international-phone-number@0.11.8|React Native GlassWorm hijack (Mar 2026)
+react-native-international-phone-number@0.12.1|React Native GlassWorm hijack (Mar 2026)
+react-native-international-phone-number@0.12.2|React Native GlassWorm hijack (Mar 2026)
+react-native-international-phone-number@0.12.3|React Native GlassWorm hijack (Mar 2026)
+react-native-country-select@0.3.91|React Native GlassWorm hijack (Mar 2026)
+@usebioerhold8733/s-format@2.0.2|React Native GlassWorm hijack (Mar 2026)
+raydium-bs58@1.0.0|Crypto typosquat stealer (Mar 2026)
+base-x-64@1.0.0|Crypto typosquat stealer (Mar 2026)
+bs58-basic@1.0.0|Crypto typosquat stealer (Mar 2026)
+base_xd@1.0.0|Crypto typosquat stealer (Mar 2026)
+ethersproject-wallet@1.0.0|Crypto typosquat stealer (Mar 2026)
 "
 
 # Targeted organizations (Shai-Hulud 2.0 targets)
-readonly TARGETED_ORGS="@asyncapi|@posthog|posthog-js|posthog-node|@postman|@zapier|zapier-platform|@ensdomains|@react-native-aria|@gluestack-ui|@browserbase|@voiceflow|@accordproject"
+readonly TARGETED_ORGS="@asyncapi|@posthog|posthog-js|posthog-node|@postman|@zapier|zapier-platform|@ensdomains|@react-native-aria|@gluestack-ui|@browserbase|@voiceflow|@accordproject|@aifabrix|@iflow-mcp|@usebioerhold8733|@shadanai|@qqbrowser"
 
 # Secret patterns
 readonly SECRET_AWS_KEY="AKIA[0-9A-Z]{16}"
 readonly SECRET_GITHUB_TOKEN="ghp_[a-zA-Z0-9]{36}"
 readonly SECRET_NPM_TOKEN="npm_[a-zA-Z0-9]{36}"
 readonly SECRET_PRIVATE_KEY="-----BEGIN.*PRIVATE KEY-----"
+
+# GlassWorm malware marker variable
+readonly GLASSWORM_MARKER="lzcdrtfxyqiplpd"
+
+# Known compromised GitHub Actions (should be SHA-pinned)
+readonly COMPROMISED_ACTIONS="tj-actions/changed-files|reviewdog/action-setup|aquasecurity/trivy-action|aquasecurity/setup-trivy"
+
+# Axios attack: phantom dependency that should never exist
+readonly PHANTOM_DEPS="plain-crypto-js"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CWE MAPPINGS
@@ -188,7 +239,11 @@ get_cwe_for_detector() {
             echo "CWE-798" ;;
         npm_audit|osv)
             echo "CWE-1035" ;;
-        obfuscation)
+        obfuscation|glassworm)
+            echo "CWE-506" ;;
+        mcp_inject)
+            echo "CWE-94" ;;
+        git_hooks)
             echo "CWE-506" ;;
         *)
             echo "" ;;
@@ -414,6 +469,11 @@ scan_package_json() {
     if grep -qE "\"($TARGETED_ORGS)\":\s*\"[\^~]" "$file" 2>/dev/null; then
         echo "UNPINNED_RISKY|$file"
     fi
+
+    # Check for postinstall scripts that install global packages (Cline attack vector)
+    if grep -qE '"(pre|post)?install":\s*"[^"]*npm install -g' "$file" 2>/dev/null; then
+        echo "POSTINSTALL_GLOBAL|$file"
+    fi
 }
 
 scan_lockfile() {
@@ -514,6 +574,45 @@ scan_lockfile() {
             fi
             ;;
     esac
+
+    # Check for phantom dependencies that should NEVER appear in lockfiles
+    # plain-crypto-js: Axios/UNC1069 attack payload (Mar 2026)
+    for phantom_dep in $PHANTOM_DEPS; do
+        local phantom_escaped
+        phantom_escaped=$(printf '%s' "$phantom_dep" | sed 's/[[\.*^$/]/\\&/g')
+        case "$filename" in
+            package-lock.json)
+                if grep -q "\"node_modules/${phantom_dep}\"" "$file" 2>/dev/null; then
+                    local phantom_ver
+                    phantom_ver=$(awk -v pkg="$phantom_dep" '
+                        $0 ~ "\"node_modules/" pkg "\"" { found=1; next }
+                        found && /"version":/ {
+                            gsub(/.*"version":[[:space:]]*"|".*/, "");
+                            print; exit
+                        }' "$file" 2>/dev/null)
+                    echo "PHANTOM_DEP|$file|${phantom_dep}@${phantom_ver:-unknown}"
+                fi
+                ;;
+            yarn.lock)
+                if grep -q "^${phantom_dep}@\|^\"${phantom_dep}@" "$file" 2>/dev/null; then
+                    local phantom_ver
+                    phantom_ver=$(awk -v pkg="$phantom_dep" '
+                        index($0, pkg "@") == 1 || index($0, "\"" pkg "@") == 1 { in_block=1; next }
+                        /^[^ \t]/ { in_block=0 }
+                        in_block && /version / { gsub(/.*version "/, ""); gsub(/".*/, ""); print; exit }
+                    ' "$file" 2>/dev/null)
+                    echo "PHANTOM_DEP|$file|${phantom_dep}@${phantom_ver:-unknown}"
+                fi
+                ;;
+            pnpm-lock.yaml)
+                if grep -qE "(^|/)${phantom_escaped}@" "$file" 2>/dev/null; then
+                    local phantom_ver
+                    phantom_ver=$(grep -oE "${phantom_escaped}@[0-9.]+" "$file" 2>/dev/null | head -1 | cut -d@ -f2)
+                    echo "PHANTOM_DEP|$file|${phantom_dep}@${phantom_ver:-unknown}"
+                fi
+                ;;
+        esac
+    done
 }
 
 scan_source_files() {
@@ -569,6 +668,11 @@ scan_source_files() {
             echo "SECRET|$file|$file_type|private_key"
         fi
 
+        # Check for GlassWorm malware marker
+        if grep -qF "$GLASSWORM_MARKER" "$file" 2>/dev/null; then
+            echo "GLASSWORM|$file|$file_type"
+        fi
+
         # Check for Base64 obfuscation (large encoded payloads)
         if [[ ! "$file" =~ \.(min|bundle)\.(js|mjs|cjs)$ ]]; then
             # Large Base64 strings in atob() or Buffer.from()
@@ -607,6 +711,25 @@ scan_github_workflows() {
         if grep -qE "YmFzaC|L2Jpbi9iYXNo|bnBt" "$workflow" 2>/dev/null; then
             echo "SUSPICIOUS_WORKFLOW|$workflow"
         fi
+
+        # Check for known-compromised GitHub Actions used without SHA pinning
+        # CVE-2025-30066 (tj-actions/changed-files), CVE-2025-30154 (reviewdog/action-setup),
+        # CVE-2026-33634 (aquasecurity/trivy-action)
+        while IFS= read -r action_line; do
+            [[ -z "$action_line" ]] && continue
+            local action_ref
+            action_ref=$(echo "$action_line" | grep -oE "uses:[[:space:]]*[^[:space:]]+" | sed 's/uses:[[:space:]]*//')
+            [[ -z "$action_ref" ]] && continue
+            # Check if it's a known-compromised action
+            local action_name="${action_ref%%@*}"
+            if echo "$action_name" | grep -qE "$COMPROMISED_ACTIONS"; then
+                local action_version="${action_ref##*@}"
+                # SHA pins are 40-char hex strings
+                if ! echo "$action_version" | grep -qE '^[0-9a-f]{40}$'; then
+                    echo "UNPINNED_COMPROMISED_ACTION|$workflow|$action_ref"
+                fi
+            fi
+        done < <(grep -E "uses:" "$workflow" 2>/dev/null)
     done < <(find "$dir" -name "*.yml" -o -name "*.yaml" 2>/dev/null)
 }
 
@@ -783,6 +906,50 @@ scan_system_locations() {
             fi
         fi
     done
+
+    # AI toolchain MCP server injection detection (SANDWORM_MODE attack vector)
+    local mcp_configs=(
+        "$HOME/.claude/claude_desktop_config.json"
+        "$HOME/.cursor/mcp.json"
+        "$HOME/.continue/config.json"
+        "$HOME/.codeium/windsurf/mcp_config.json"
+    )
+
+    for mcp_config in "${mcp_configs[@]}"; do
+        if [[ -f "$mcp_config" ]]; then
+            ((FILES_SCANNED++))
+            # Check for suspicious MCP server entries (non-standard commands, unknown servers)
+            if grep -qE '"command":\s*"(curl|wget|node\s+/tmp|python.*-c|bash\s+-c)' "$mcp_config" 2>/dev/null; then
+                echo "MCP_INJECTION|$mcp_config|suspicious_command"
+            fi
+            # Check for MCP servers pointing to temp directories or suspicious paths
+            if grep -qE '"(command|url)":\s*"[^"]*(/tmp/|/var/tmp/|\.npm/_|ngrok|localtunnel)' "$mcp_config" 2>/dev/null; then
+                echo "MCP_INJECTION|$mcp_config|suspicious_path"
+            fi
+        fi
+    done
+
+    # Git hook persistence detection (SANDWORM_MODE attack vector)
+    # Check global git hook template directory
+    local git_hook_dir
+    git_hook_dir=$(git config --global core.hooksPath 2>/dev/null || echo "")
+    if [[ -n "$git_hook_dir" ]] && [[ -d "$git_hook_dir" ]]; then
+        while IFS= read -r hook; do
+            [[ -z "$hook" ]] && continue
+            ((FILES_SCANNED++))
+            if [[ -x "$hook" ]]; then
+                # Check for suspicious content in global git hooks
+                if grep -qE "(curl|wget|eval|base64|nc\s|ncat)" "$hook" 2>/dev/null; then
+                    echo "GIT_HOOK_PERSIST|$hook|global_hook"
+                fi
+            fi
+        done < <(find "$git_hook_dir" -type f 2>/dev/null)
+    fi
+
+    # Check for GlassWorm persistence indicator
+    if [[ -f "$HOME/init.json" ]]; then
+        echo "GLASSWORM_PERSIST|$HOME/init.json|persistence_file"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -996,6 +1163,50 @@ analyze_phase() {
             SHELL_PATH)
                 emit_finding "HIGH" "$file" "Suspicious PATH modification (backdoor risk)" "shell" "0.8" \
                     "Review PATH change - /tmp or current directory in PATH is dangerous"
+                ;;
+
+            PHANTOM_DEP)
+                local dep_info="$extra1"
+                emit_finding "CRITICAL" "$file" "Malicious phantom dependency: $dep_info" "versions" "1.0" \
+                    "Delete immediately - this package is a known attack payload (Axios/UNC1069)"
+                ;;
+
+            GLASSWORM)
+                local file_type="$extra1"
+                if [[ "$file_type" == "test_file" ]]; then
+                    emit_finding "MEDIUM" "$file" "GlassWorm marker in test file" "glassworm" "0.5" \
+                        "Verify file contents - may be test fixture"
+                else
+                    emit_finding "CRITICAL" "$file" "GlassWorm malware marker detected" "glassworm" "1.0" \
+                        "File contains GlassWorm invisible unicode malware indicator"
+                fi
+                ;;
+
+            GLASSWORM_PERSIST)
+                emit_finding "CRITICAL" "$file" "GlassWorm persistence file detected (~/init.json)" "glassworm" "0.95" \
+                    "Delete ~/init.json, check for unexpected Node.js installations in home directory"
+                ;;
+
+            UNPINNED_COMPROMISED_ACTION)
+                local action_ref="$extra1"
+                emit_finding "HIGH" "$file" "Known-compromised GitHub Action without SHA pin: $action_ref" "workflow" "0.85" \
+                    "Pin to a full commit SHA - this action was compromised (CVE-2025-30066/CVE-2025-30154/CVE-2026-33634)"
+                ;;
+
+            POSTINSTALL_GLOBAL)
+                emit_finding "HIGH" "$file" "Postinstall script installs global npm packages" "postinstall" "0.9" \
+                    "Review script - global installs in postinstall can be supply chain attacks (e.g. Cline compromise)"
+                ;;
+
+            MCP_INJECTION)
+                local inject_type="$extra1"
+                emit_finding "CRITICAL" "$file" "Suspicious MCP server configuration ($inject_type)" "mcp_inject" "0.9" \
+                    "Review AI tool MCP config - SANDWORM_MODE injects rogue MCP servers for prompt injection"
+                ;;
+
+            GIT_HOOK_PERSIST)
+                emit_finding "HIGH" "$file" "Suspicious content in global git hook" "git_hooks" "0.85" \
+                    "Review git hook for unauthorized scripts - SANDWORM_MODE uses git hooks for persistence"
                 ;;
         esac
     done
@@ -1416,6 +1627,8 @@ main() {
         print_check "VS Code extensions"
         print_check "npm cache"
         print_check "shell configs"
+        print_check "AI tool configs (MCP)"
+        print_check "git hooks"
     fi
 
     clear_progress
